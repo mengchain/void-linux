@@ -48,21 +48,16 @@ echo "GUMMIBOOT_DISABLE=1" > /mnt/etc/default/gummiboot
 # Install packages
 print 'Install packages'
 packages=(
-  intel-ucode
   zfs
   zfsbootmenu
   efibootmgr
   gummiboot # required by zfsbootmenu
   chrony # ntp
-  cronie # cron
-  seatd # minimal seat management daemon, required by sway
   acpid # power management
   socklog-void # syslog daemon
   iwd # wifi daemon
   dhclient
   openresolv # dns
-  git
-  ansible
   )
 
 XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" "${packages[@]}"
@@ -76,13 +71,6 @@ print 'Copy ZFS files'
 cp /etc/hostid /mnt/etc/hostid
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
 cp /etc/zfs/zroot.key /mnt/etc/zfs
-
-# Configure iwd
-cat > /mnt/etc/iwd/main.conf <<"EOF"
-[General]
-UseDefaultInterface=true
-EnableNetworkConfiguration=true
-EOF
 
 # Configure DNS
 cat >> /mnt/etc/resolvconf.conf <<"EOF"
@@ -130,20 +118,16 @@ chroot /mnt/ /bin/bash -e <<EOF
 
   # Configure services
   ln -s /etc/sv/dhcpcd-eth0 /etc/runit/runsvdir/default/
-  ln -s /etc/sv/iwd /etc/runit/runsvdir/default/
   ln -s /etc/sv/chronyd /etc/runit/runsvdir/default/
-  ln -s /etc/sv/crond /etc/runit/runsvdir/default/
   ln -s /etc/sv/dbus /etc/runit/runsvdir/default/
-  ln -s /etc/sv/seatd /etc/runit/runsvdir/default/
   ln -s /etc/sv/acpid /etc/runit/runsvdir/default/
-  ln -s /etc/sv/socklog-unix /etc/runit/runsvdir/default/
-  ln -s /etc/sv/nanoklogd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/socklog-unix /etc/runit/runsvdir/default/  
 
   # Generates locales
   xbps-reconfigure -f glibc-locales
 
   # Add user
-  useradd -m $user -G network,wheel,socklog,video,audio,_seatd,input
+  useradd -m $user -G network,wheel,socklog,video,audio,input
 
   # Configure fstab
   grep efi /proc/mounts > /etc/fstab
