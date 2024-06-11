@@ -22,7 +22,7 @@ print () {
 root_dataset=$(cat /tmp/root_dataset)
 
 # Set mirror and architecture
-REPO=https://alpha.de.repo.voidlinux.org/current
+REPO=https://repo-default.voidlinux.org/current
 ARCH=x86_64
 
 # Copy keys
@@ -53,8 +53,8 @@ packages=(
   efibootmgr
   gummiboot # required by zfsbootmenu
   chrony # ntp
+  cronie # cron
   acpid # power management
-  socklog-void # syslog daemon
   iwd # wifi daemon
   dhclient
   openresolv # dns
@@ -72,10 +72,18 @@ cp /etc/hostid /mnt/etc/hostid
 cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
 cp /etc/zfs/zroot.key /mnt/etc/zfs
 
+# Configure iwd
+cat > /mnt/etc/iwd/main.conf <<"EOF"
+[General]
+UseDefaultInterface=true
+EnableNetworkConfiguration=true
+EOF
+
 # Configure DNS
 cat >> /mnt/etc/resolvconf.conf <<"EOF"
 resolv_conf=/etc/resolv.conf
-name_servers="1.1.1.1 9.9.9.9"
+name_servers_append="1.1.1.1 9.9.9.9"
+name_server_blacklist="192.168.*"
 EOF
 
 # Enable ip forward
@@ -85,13 +93,13 @@ EOF
 
 # Prepare locales and keymap
 print 'Prepare locales and keymap'
-echo 'KEYMAP=us' > /mnt/etc/vconsole.conf
+echo 'KEYMAP=en' > /mnt/etc/vconsole.conf
 echo 'en_US.UTF-8 UTF-8' > /mnt/etc/default/libc-locales
 echo 'LANG="en_US.UTF-8"' > /mnt/etc/locale.conf
 
 # Configure system
 cat >> /mnt/etc/rc.conf << EOF
-KEYMAP="us"
+KEYMAP="en"
 TIMEZONE="Asia/Singapore"
 HARDWARECLOCK="UTC"
 EOF
@@ -118,16 +126,19 @@ chroot /mnt/ /bin/bash -e <<EOF
 
   # Configure services
   ln -s /etc/sv/dhcpcd-eth0 /etc/runit/runsvdir/default/
+  ln -s /etc/sv/iwd /etc/runit/runsvdir/default/
   ln -s /etc/sv/chronyd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/crond /etc/runit/runsvdir/default/
   ln -s /etc/sv/dbus /etc/runit/runsvdir/default/
   ln -s /etc/sv/acpid /etc/runit/runsvdir/default/
-  ln -s /etc/sv/socklog-unix /etc/runit/runsvdir/default/  
 
   # Generates locales
   xbps-reconfigure -f glibc-locales
 
   # Add user
-  useradd -m $user -G network,wheel,socklog,video,audio,input
+  zfs create zroot/data/home/${user}
+  useradd -m ${user} -G network,wheel,socklog,video,audio,_seatd,input
+  chown -R ${user}:${user} /home/${user}
 
   # Configure fstab
   grep efi /proc/mounts > /etc/fstab
@@ -176,12 +187,22 @@ EFI:
   Versions: false
   Enabled: true
 Kernel:
-  CommandLine: ro quiet loglevel=0 zbm.import_policy=hostid
+  CommandLine: ro quiet loglevel=0
   Prefix: vmlinuz
 EOF
 
+# Add keymap to dracut
+cat > /mnt/etc/zfsbootmenu/dracut.conf.d/keymap.conf <<EOF
+install_optional_items+=" /etc/cmdline.d/keymap.conf "
+EOF
+
+mkdir -p /mnt/etc/cmdline.d/
+cat > /mnt/etc/cmdline.d/keymap.conf <<EOF
+rd.vconsole.keymap=en
+EOF
+
 # Set cmdline
-zfs set org.zfsbootmenu:commandline="ro quiet nowatchdog rd.vconsole.keymap=us" zroot/ROOT/"$root_dataset"
+zfs set org.zfsbootmenu:commandline="ro quiet nowatchdog net.ifnames=0 zswap.enabled=0" zroot/ROOT/"$root_dataset"
 
 # Generate ZBM
 print 'Generate zbm'
@@ -214,23 +235,26 @@ modprobe efivarfs
 mountpoint -q /sys/firmware/efi/efivars \
     || mount -t efivarfs efivarfs /sys/firmware/efi/efivars
 
-if ! efibootmgr | grep ZFSBootMenu
+if efibootmgr | grep ZFSBootMenu
 then
-    efibootmgr --disk "$DISK" \
-      --part 1 \
-      --create \
-      --label "ZFSBootMenu Backup" \
-      --loader "\EFI\ZBM\vmlinuz-backup.efi" \
-      --verbose
-    efibootmgr --disk "$DISK" \
-      --part 1 \
-      --create \
-      --label "ZFSBootMenu" \
-      --loader "\EFI\ZBM\vmlinuz.efi" \
-      --verbose
-else
-    print 'Boot entries already created'
+  for entry in $(efibootmgr | grep ZFSBootMenu | sed -E 's/Boot([0-9]+).*/\1/')
+  do
+    efibootmgr -B -b "$entry"
+  done
 fi
+
+efibootmgr --disk "$DISK" \
+  --part 1 \
+  --create \
+  --label "ZFSBootMenu Backup" \
+  --loader "\EFI\ZBM\vmlinuz-backup.efi" \
+  --verbose
+efibootmgr --disk "$DISK" \
+  --part 1 \
+  --create \
+  --label "ZFSBootMenu" \
+  --loader "\EFI\ZBM\vmlinuz.efi" \
+  --verbose
 
 # Umount all parts
 print 'Umount all parts'

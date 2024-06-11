@@ -93,7 +93,8 @@ create_pool () {
                  -O relatime=on                           \
                  -O xattr=sa                              \
                  -O dnodesize=legacy                      \
-                 -O encryption=aes-256-gcm                \
+                 # -O encryption=aes-256-gcm                \
+                 -O encryption=off                \
                  -O keyformat=passphrase                  \
                  -O keylocation=file:///etc/zfs/zroot.key \
                  -O normalization=formD                   \
