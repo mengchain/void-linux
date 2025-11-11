@@ -82,12 +82,15 @@ load_config() {
     POOLS_EXIST=${POOLS_EXIST:-false}
     TOTAL_UPDATES=${TOTAL_UPDATES:-0}
     ZFS_COUNT=${ZFS_COUNT:-0}
+    DRACUT_COUNT=${DRACUT_COUNT:-0}
     KERNEL_COUNT=${KERNEL_COUNT:-0}
     FIRMWARE_COUNT=${FIRMWARE_COUNT:-0}
+    DKMS_COUNT=${DKMS_COUNT:-0}
+    DKMS_AVAILABLE=${DKMS_AVAILABLE:-false}
     
     info "Configuration loaded successfully"
     log "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
-    log "Updates to install: $TOTAL_UPDATES packages (ZFS: $ZFS_COUNT, Kernel: $KERNEL_COUNT, Firmware: $FIRMWARE_COUNT)"
+    log "Updates to install: $TOTAL_UPDATES packages (ZFS: $ZFS_COUNT, Dracut: $DRACUT_COUNT, Kernel: $KERNEL_COUNT, Firmware: $FIRMWARE_COUNT, DKMS: $DKMS_COUNT)"
     log "Backup directory: $BACKUP_DIR"
 }
 
@@ -109,22 +112,33 @@ check_prerequisites() {
         fi
     fi
     
+    # Check if another package manager is running
+    if pgrep -f "xbps-install" >/dev/null 2>&1; then
+        error_exit "Another xbps-install process is running. Wait for completion."
+    fi
+    
     success "Prerequisites check passed"
 }
 
 get_packages_to_install() {
     info "Getting current package lists for installation..."
     
-    # Get list of ZFS packages to update
-    ZFS_PACKAGES=$(xbps-install -un 2>/dev/null | grep "zfs" | awk '{print $1}' | tr '\n' ' ' || true)
+    # Get list of ZFS packages to update (improved pattern matching)
+    ZFS_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^(zfs|zfsbootmenu)-" | awk '{print $1}' | tr '\n' ' ' || true)
     
-    # Get list of kernel packages to update
-    KERNEL_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "linux[0-9]*-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
+    # Get list of dracut packages to update
+    DRACUT_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^dracut-" | awk '{print $1}' | tr '\n' ' ' || true)
+    
+    # Get list of kernel packages to update (improved pattern)
+    KERNEL_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^linux[0-9]+-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
     
     # Get firmware packages
-    FIRMWARE_PACKAGES=$(xbps-install -un 2>/dev/null | grep "linux-firmware" | awk '{print $1}' | tr '\n' ' ' || true)
+    FIRMWARE_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^linux-firmware" | awk '{print $1}' | tr '\n' ' ' || true)
     
-    ALL_PACKAGES="$ZFS_PACKAGES $KERNEL_PACKAGES $FIRMWARE_PACKAGES"
+    # Get DKMS packages
+    DKMS_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^dkms" | awk '{print $1}' | tr '\n' ' ' || true)
+    
+    ALL_PACKAGES="$ZFS_PACKAGES $DRACUT_PACKAGES $KERNEL_PACKAGES $FIRMWARE_PACKAGES $DKMS_PACKAGES"
     
     # Trim whitespace
     ALL_PACKAGES=$(echo "$ALL_PACKAGES" | xargs)
@@ -136,10 +150,52 @@ get_packages_to_install() {
     
     info "Packages to install:"
     [ -n "$ZFS_PACKAGES" ] && log "  ZFS: $ZFS_PACKAGES"
+    [ -n "$DRACUT_PACKAGES" ] && log "  Dracut: $DRACUT_PACKAGES"
     [ -n "$KERNEL_PACKAGES" ] && log "  Kernel: $KERNEL_PACKAGES"
     [ -n "$FIRMWARE_PACKAGES" ] && log "  Firmware: $FIRMWARE_PACKAGES"
+    [ -n "$DKMS_PACKAGES" ] && log "  DKMS: $DKMS_PACKAGES"
     
     return 0
+}
+
+create_installation_snapshot() {
+    if [ "$POOLS_EXIST" != "true" ]; then
+        info "No ZFS pools - skipping installation snapshot"
+        return 0
+    fi
+    
+    info "Creating pre-installation snapshot for rollback protection..."
+    
+    INSTALL_SNAPSHOT_NAME="pre-install-$(date +%Y%m%d-%H%M%S)"
+    INSTALL_SNAPSHOT_COUNT=0
+    INSTALL_FAILED_COUNT=0
+    
+    # Create snapshots for all datasets before any changes
+    for dataset in $(zfs list -H -o name -t filesystem,volume 2>/dev/null || true); do
+        if zfs snapshot "${dataset}@${INSTALL_SNAPSHOT_NAME}" 2>/dev/null; then
+            ((INSTALL_SNAPSHOT_COUNT++))
+            log "Created installation snapshot: ${dataset}@${INSTALL_SNAPSHOT_NAME}"
+        else
+            ((INSTALL_FAILED_COUNT++))
+            warning "Failed to create installation snapshot for $dataset"
+        fi
+    done
+    
+    if [ $INSTALL_SNAPSHOT_COUNT -gt 0 ]; then
+        success "Created $INSTALL_SNAPSHOT_COUNT installation snapshots"
+        
+        # Save this snapshot name for rollback script
+        echo "INSTALL_SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
+        echo "SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
+        
+        info "Installation snapshot name saved for potential rollback"
+    else
+        warning "No installation snapshots created"
+    fi
+    
+    if [ $INSTALL_FAILED_COUNT -gt 0 ]; then
+        warning "$INSTALL_FAILED_COUNT installation snapshots failed to create"
+    fi
 }
 
 export_single_pool() {
@@ -240,7 +296,7 @@ export_zfs_pools() {
 }
 
 install_updates() {
-    info "Installing ZFS and kernel updates..."
+    info "Installing ZFS and related updates..."
     
     # Update ZFS packages first
     if [ -n "${ZFS_PACKAGES:-}" ]; then
@@ -249,6 +305,26 @@ install_updates() {
             success "ZFS packages updated successfully"
         else
             error_exit "Failed to update ZFS packages"
+        fi
+    fi
+    
+    # Update DKMS packages if available
+    if [ -n "${DKMS_PACKAGES:-}" ]; then
+        info "Installing DKMS packages: $DKMS_PACKAGES"
+        if xbps-install -y $DKMS_PACKAGES; then
+            success "DKMS packages updated successfully"
+        else
+            warning "DKMS update failed - continuing anyway"
+        fi
+    fi
+    
+    # Update dracut packages
+    if [ -n "${DRACUT_PACKAGES:-}" ]; then
+        info "Installing dracut packages: $DRACUT_PACKAGES"
+        if xbps-install -y $DRACUT_PACKAGES; then
+            success "Dracut packages updated successfully"
+        else
+            error_exit "Failed to update dracut packages"
         fi
     fi
     
@@ -274,20 +350,56 @@ install_updates() {
         fi
     fi
     
-    # Save kernel update status for later scripts
+    # Save update status
     echo "KERNEL_UPDATED=$KERNEL_UPDATED" >> "$CONFIG_FILE"
+    echo "DRACUT_UPDATED=$([ -n "${DRACUT_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
+    echo "ZFS_UPDATED=$([ -n "${ZFS_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
+    echo "DKMS_UPDATED=$([ -n "${DKMS_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
     
     success "Package installation completed"
 }
 
+rebuild_dkms_modules() {
+    if [ "${DKMS_AVAILABLE:-false}" != "true" ]; then
+        info "DKMS not available - skipping DKMS rebuild"
+        return 0
+    fi
+    
+    if [ "${KERNEL_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ] || [ "${DKMS_UPDATED:-false}" = "true" ]; then
+        info "Rebuilding DKMS modules for ZFS..."
+        
+        LATEST_KERNEL=$(ls /lib/modules 2>/dev/null | sort -V | tail -1)
+        
+        if [ -n "$LATEST_KERNEL" ]; then
+            info "Building DKMS modules for kernel: $LATEST_KERNEL"
+            
+            # Remove old ZFS DKMS modules
+            dkms remove zfs --all 2>/dev/null || true
+            
+            # Add and build ZFS modules for the new kernel
+            if dkms add zfs && dkms build zfs && dkms install zfs; then
+                success "DKMS ZFS modules rebuilt successfully"
+            else
+                error_exit "Failed to rebuild DKMS ZFS modules"
+            fi
+        else
+            warning "Cannot determine latest kernel for DKMS rebuild"
+        fi
+    else
+        info "No updates requiring DKMS rebuild"
+    fi
+}
+
 rebuild_initramfs() {
-    # Rebuild if kernel was updated OR if ZFS was updated
-    if [ "${KERNEL_UPDATED:-false}" = "true" ] || [ "${ZFS_COUNT:-0}" -gt 0 ]; then
+    # Rebuild if kernel was updated OR if ZFS/dracut was updated
+    if [ "${KERNEL_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ] || [ "${DRACUT_UPDATED:-false}" = "true" ]; then
         
         if [ "${KERNEL_UPDATED:-false}" = "true" ]; then
             info "Rebuilding initramfs for updated kernel..."
-        else
+        elif [ "${ZFS_UPDATED:-false}" = "true" ]; then
             info "Rebuilding initramfs for updated ZFS modules..."
+        else
+            info "Rebuilding initramfs for updated dracut..."
         fi
         
         LATEST_KERNEL=$(ls /lib/modules 2>/dev/null | sort -V | tail -1)
@@ -325,7 +437,7 @@ rebuild_initramfs() {
             fi
         fi
     else
-        info "No kernel or ZFS updates - skipping initramfs rebuild"
+        info "No kernel, ZFS, or dracut updates - skipping initramfs rebuild"
     fi
 }
 
@@ -406,12 +518,12 @@ update_zfsbootmenu() {
         return 0
     fi
     
-    if [ "${KERNEL_UPDATED:-false}" != "true" ]; then
-        info "No kernel update - skipping ZFSBootMenu regeneration"
+    if [ "${KERNEL_UPDATED:-false}" != "true" ] && [ "${ZFS_UPDATED:-false}" != "true" ]; then
+        info "No kernel or ZFS update - skipping ZFSBootMenu regeneration"
         return 0
     fi
     
-    info "Updating ZFSBootMenu for new kernel..."
+    info "Updating ZFSBootMenu for updated components..."
     
     # Check if zfsbootmenu command is available
     if ! command -v zfsbootmenu >/dev/null 2>&1; then
@@ -515,51 +627,23 @@ verify_basic_functionality() {
         info "No ZFS pools to verify"
     fi
     
-    success "Basic functionality verification passed"
-}
-
-# Add this function after the load_config() function:
-
-create_installation_snapshot() {
-    if [ "$POOLS_EXIST" != "true" ]; then
-        info "No ZFS pools - skipping installation snapshot"
-        return 0
-    fi
+    # Verify package versions match
+    info "Verifying updated package versions..."
+    CURRENT_ZFS=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
+    ZFS_USERLAND=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
     
-    info "Creating pre-installation snapshot for rollback protection..."
+    log "Updated ZFS kernel module: $CURRENT_ZFS"
+    log "Updated ZFS userland: $ZFS_USERLAND"
     
-    INSTALL_SNAPSHOT_NAME="pre-install-$(date +%Y%m%d-%H%M%S)"
-    INSTALL_SNAPSHOT_COUNT=0
-    INSTALL_FAILED_COUNT=0
-    
-    # Create snapshots for all datasets before any changes
-    for dataset in $(zfs list -H -o name -t filesystem,volume 2>/dev/null || true); do
-        if zfs snapshot "${dataset}@${INSTALL_SNAPSHOT_NAME}" 2>/dev/null; then
-            ((INSTALL_SNAPSHOT_COUNT++))
-            log "Created installation snapshot: ${dataset}@${INSTALL_SNAPSHOT_NAME}"
+    if [ "$CURRENT_ZFS" != "unknown" ] && [ "$ZFS_USERLAND" != "unknown" ]; then
+        if [ "$CURRENT_ZFS" = "$ZFS_USERLAND" ]; then
+            success "ZFS kernel and userland versions match after update"
         else
-            ((INSTALL_FAILED_COUNT++))
-            warning "Failed to create installation snapshot for $dataset"
+            warning "ZFS version mismatch after update: kernel=$CURRENT_ZFS, userland=$ZFS_USERLAND"
         fi
-    done
-    
-    if [ $INSTALL_SNAPSHOT_COUNT -gt 0 ]; then
-        success "Created $INSTALL_SNAPSHOT_COUNT installation snapshots"
-        
-        # Save this snapshot name for rollback script
-        echo "INSTALL_SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
-        
-        # Also update the main snapshot name to this more recent one
-        echo "SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
-        
-        info "Installation snapshot name saved for potential rollback"
-    else
-        warning "No installation snapshots created"
     fi
     
-    if [ $INSTALL_FAILED_COUNT -gt 0 ]; then
-        warning "$INSTALL_FAILED_COUNT installation snapshots failed to create"
-    fi
+    success "Basic functionality verification passed"
 }
 
 main() {
@@ -583,19 +667,23 @@ main() {
     echo ""
     echo "This will:"
     if [ "$POOLS_EXIST" = "true" ]; then
-        echo "1. Export all ZFS pools"
+        echo "1. Create installation snapshots"
+        echo "2. Export all ZFS pools"
     else
         echo "1. Skip pool operations (no pools detected)"
     fi
-    echo "2. Update ZFS and kernel packages"
-    echo "3. Rebuild initramfs if needed"
+    echo "3. Update ZFS, dracut, and kernel packages"
+    if [ "${DKMS_AVAILABLE:-false}" = "true" ]; then
+        echo "4. Rebuild DKMS modules if needed"
+    fi
+    echo "5. Rebuild initramfs if needed"
     if [ "$ZFSBOOTMENU" = true ]; then
-        echo "4. Update ZFSBootMenu EFI image"
+        echo "6. Update ZFSBootMenu EFI image"
     else
-        echo "4. Update bootloader configuration"
+        echo "6. Update bootloader configuration"
     fi
     if [ "$POOLS_EXIST" = "true" ]; then
-        echo "5. Re-import ZFS pools"
+        echo "7. Re-import ZFS pools"
     fi
     echo ""
     read -p "Continue with installation? (y/N): " -n 1 -r
@@ -606,9 +694,10 @@ main() {
     fi
     
     # Execute installation steps
-    create_installation_snapshot	
+    create_installation_snapshot
     export_zfs_pools
     install_updates
+    rebuild_dkms_modules
     rebuild_initramfs
     reimport_zfs_pools
     update_bootloader
@@ -641,6 +730,10 @@ main() {
     echo ""
     echo "Log file: $LOG_FILE"
     echo "Backup: $BACKUP_DIR"
+    
+    # Save final status
+    echo "INSTALLATION_COMPLETED=true" >> "$CONFIG_FILE"
+    echo "INSTALLATION_DATE=\"$(date)\"" >> "$CONFIG_FILE"
     
     log "Installation completed successfully"
 }
