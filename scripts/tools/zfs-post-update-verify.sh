@@ -58,6 +58,10 @@ load_config() {
         ZFSBOOTMENU=false
         POOLS_EXIST=false
         KERNEL_UPDATED=false
+        DRACUT_UPDATED=false
+        ZFS_UPDATED=false
+        DKMS_UPDATED=false
+        DKMS_AVAILABLE=false
         BACKUP_DIR=""
         return 0
     fi
@@ -68,15 +72,21 @@ load_config() {
     ZFSBOOTMENU=${ZFSBOOTMENU:-false}
     POOLS_EXIST=${POOLS_EXIST:-false}
     KERNEL_UPDATED=${KERNEL_UPDATED:-false}
+    DRACUT_UPDATED=${DRACUT_UPDATED:-false}
+    ZFS_UPDATED=${ZFS_UPDATED:-false}
+    DKMS_UPDATED=${DKMS_UPDATED:-false}
+    DKMS_AVAILABLE=${DKMS_AVAILABLE:-false}
     BACKUP_DIR=${BACKUP_DIR:-""}
     ZFS_COUNT=${ZFS_COUNT:-0}
+    DRACUT_COUNT=${DRACUT_COUNT:-0}
     KERNEL_COUNT=${KERNEL_COUNT:-0}
+    DKMS_COUNT=${DKMS_COUNT:-0}
     TOTAL_UPDATES=${TOTAL_UPDATES:-0}
     
     info "Configuration loaded"
     log "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
     log "Pools exist: $POOLS_EXIST"
-    log "Kernel was updated: $KERNEL_UPDATED"
+    log "Updates applied - Kernel: $KERNEL_UPDATED, ZFS: $ZFS_UPDATED, Dracut: $DRACUT_UPDATED, DKMS: $DKMS_UPDATED"
     log "Total updates performed: $TOTAL_UPDATES"
 }
 
@@ -167,6 +177,70 @@ verify_zfs_userland() {
         else
             warning "ZFS kernel module ($ZFS_MODULE_VERSION) and userland ($ZFS_USERLAND_VERSION) versions differ"
             warning "This is unusual and may indicate an incomplete update"
+        fi
+    fi
+}
+
+verify_dracut_functionality() {
+    info "Verifying dracut functionality..."
+    
+    if ! command -v dracut >/dev/null 2>&1; then
+        warning "dracut command not found"
+        return 0
+    fi
+    
+    DRACUT_VERSION=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
+    log "Dracut version: $DRACUT_VERSION"
+    
+    # Check if dracut can detect ZFS modules
+    if dracut --list-modules 2>/dev/null | grep -q zfs; then
+        success "Dracut has ZFS module support"
+    else
+        warning "Dracut may not have ZFS module support"
+    fi
+    
+    # Check dracut configuration
+    if [ -f /etc/dracut.conf ] || [ -d /etc/dracut.conf.d ]; then
+        success "Dracut configuration found"
+        
+        # Look for ZFS-related configuration
+        if grep -r "zfs" /etc/dracut.conf /etc/dracut.conf.d/ 2>/dev/null | grep -v "^#"; then
+            info "ZFS configuration found in dracut settings"
+        fi
+    else
+        info "No custom dracut configuration found (using defaults)"
+    fi
+}
+
+verify_dkms_status() {
+    if [ "${DKMS_AVAILABLE:-false}" != "true" ]; then
+        info "DKMS not available - skipping DKMS verification"
+        return 0
+    fi
+    
+    info "Verifying DKMS status..."
+    
+    if ! command -v dkms >/dev/null 2>&1; then
+        warning "DKMS command not available"
+        return 0
+    fi
+    
+    DKMS_STATUS=$(dkms status zfs 2>/dev/null || echo "not found")
+    log "DKMS ZFS status: $DKMS_STATUS"
+    
+    # Check if ZFS modules are properly installed for current kernel
+    RUNNING_KERNEL=$(uname -r)
+    if echo "$DKMS_STATUS" | grep -q "$RUNNING_KERNEL.*installed"; then
+        success "DKMS ZFS module installed for running kernel"
+    elif echo "$DKMS_STATUS" | grep -q "installed"; then
+        warning "DKMS ZFS module installed but may not match running kernel"
+        log "Current kernel: $RUNNING_KERNEL"
+        log "DKMS status: $DKMS_STATUS"
+    else
+        if [ "${DKMS_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ]; then
+            error "DKMS ZFS module not properly installed after update"
+        else
+            info "DKMS ZFS module status: $DKMS_STATUS"
         fi
     fi
 }
@@ -339,6 +413,15 @@ verify_zfsbootmenu() {
     else
         success "ZFSBootMenu configuration found"
         log "Config file: $ZBM_CONFIG_FILE"
+        
+        # Validate configuration syntax
+        if command -v yaml-lint >/dev/null 2>&1; then
+            if yaml-lint "$ZBM_CONFIG_FILE" >/dev/null 2>&1; then
+                success "ZFSBootMenu configuration syntax is valid"
+            else
+                warning "ZFSBootMenu configuration may have syntax issues"
+            fi
+        fi
     fi
     
     # Check EFI image
@@ -360,12 +443,15 @@ verify_zfsbootmenu() {
         fi
         
         # Check if the image was updated recently (if kernel was updated)
-        if [ "$KERNEL_UPDATED" = true ]; then
+        if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ]; then
             IMAGE_AGE_MINUTES=$(( ($(date +%s) - $(stat -c%Y "$ZBM_EFI_PATH" 2>/dev/null || echo "0")) / 60 ))
             if [ "$IMAGE_AGE_MINUTES" -lt 60 ]; then
                 success "ZFSBootMenu image was recently updated (${IMAGE_AGE_MINUTES} minutes ago)"
             else
                 warning "ZFSBootMenu image may be outdated (${IMAGE_AGE_MINUTES} minutes old)"
+                if [ "$KERNEL_UPDATED" = true ]; then
+                    warning "Consider regenerating ZFSBootMenu image: zfsbootmenu -g"
+                fi
             fi
         fi
     else
@@ -452,12 +538,15 @@ verify_initramfs() {
         fi
         
         # Check if initramfs was updated recently (if kernel or ZFS was updated)
-        if [ "$KERNEL_UPDATED" = true ] || [ "${ZFS_COUNT:-0}" -gt 0 ]; then
+        if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ] || [ "$DRACUT_UPDATED" = true ]; then
             INITRAMFS_AGE_MINUTES=$(( ($(date +%s) - $(stat -c%Y "$INITRAMFS_PATH" 2>/dev/null || echo "0")) / 60 ))
             if [ "$INITRAMFS_AGE_MINUTES" -lt 60 ]; then
                 success "Initramfs was recently updated (${INITRAMFS_AGE_MINUTES} minutes ago)"
             else
                 warning "Initramfs may be outdated (${INITRAMFS_AGE_MINUTES} minutes old)"
+                if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ]; then
+                    warning "Consider rebuilding: dracut -f"
+                fi
             fi
         fi
     else
@@ -499,6 +588,11 @@ test_basic_zfs_operations() {
             if zfs snapshot "$TEST_SNAPSHOT" 2>/dev/null; then
                 success "ZFS snapshot creation works"
                 
+                # Test snapshot listing
+                if zfs list -t snapshot "$TEST_SNAPSHOT" >/dev/null 2>&1; then
+                    log "ZFS snapshot listing works"
+                fi
+                
                 # Clean up test snapshot
                 if zfs destroy "$TEST_SNAPSHOT" 2>/dev/null; then
                     log "Test snapshot cleaned up successfully"
@@ -514,18 +608,71 @@ test_basic_zfs_operations() {
     success "Basic ZFS operations test completed"
 }
 
+check_rollback_capability() {
+    if [ "$POOLS_EXIST" != "true" ]; then
+        info "No ZFS pools - rollback capability not applicable"
+        return 0
+    fi
+    
+    info "Verifying rollback capability..."
+    
+    # Check for installation snapshots
+    INSTALL_SNAPSHOT_NAME=${INSTALL_SNAPSHOT_NAME:-}
+    if [ -n "$INSTALL_SNAPSHOT_NAME" ]; then
+        SNAPSHOT_COUNT=0
+        EXISTING_SNAPSHOTS=""
+        
+        # Check which snapshots actually exist
+        for dataset in $(zfs list -H -o name -t filesystem,volume 2>/dev/null || true); do
+            if zfs list -t snapshot "${dataset}@${INSTALL_SNAPSHOT_NAME}" >/dev/null 2>&1; then
+                ((SNAPSHOT_COUNT++))
+                EXISTING_SNAPSHOTS="$EXISTING_SNAPSHOTS ${dataset}@${INSTALL_SNAPSHOT_NAME}"
+            fi
+        done
+        
+        if [ $SNAPSHOT_COUNT -gt 0 ]; then
+            success "Found $SNAPSHOT_COUNT installation snapshots for rollback"
+            info "Snapshots available for rollback: $INSTALL_SNAPSHOT_NAME"
+        else
+            warning "No installation snapshots found - rollback may not be possible"
+        fi
+    else
+        info "No installation snapshot name recorded"
+    fi
+    
+    # Check for backup directory
+    if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+        success "Backup directory exists for configuration rollback"
+        
+        # Check key backup files
+        BACKUP_FILES="zfs-datasets.txt zpool-list.txt"
+        for file in $BACKUP_FILES; do
+            if [ -f "$BACKUP_DIR/$file" ]; then
+                log "✓ Backup file found: $file"
+            else
+                warning "Missing backup file: $file"
+            fi
+        done
+    else
+        warning "Backup directory not found - configuration rollback limited"
+    fi
+}
+
 run_comprehensive_checks() {
     header "COMPREHENSIVE POST-UPDATE VERIFICATION"
     
     verify_kernel_version
     verify_zfs_module
     verify_zfs_userland
+    verify_dracut_functionality
+    verify_dkms_status
     verify_pool_status
     verify_pool_import
     verify_datasets_mounted
     verify_initramfs
     verify_bootloader
     test_basic_zfs_operations
+    check_rollback_capability
 }
 
 show_system_summary() {
@@ -539,6 +686,7 @@ show_system_summary() {
     echo "• ZFS userland version: ${ZFS_USERLAND_VERSION:-unknown}"
     echo "• System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
     echo "• Pools exist: $POOLS_EXIST"
+    echo "• DKMS available: ${DKMS_AVAILABLE:-false}"
     
     if [ "$POOLS_EXIST" = "true" ]; then
         echo ""
@@ -549,9 +697,10 @@ show_system_summary() {
     echo ""
     echo "Update Information:"
     echo "• Total updates applied: ${TOTAL_UPDATES:-0}"
-    echo "• ZFS updates: ${ZFS_COUNT:-0}"
-    echo "• Kernel updates: ${KERNEL_COUNT:-0}"
-    echo "• Kernel was updated: $KERNEL_UPDATED"
+    echo "• ZFS updates: ${ZFS_COUNT:-0} (updated: ${ZFS_UPDATED:-false})"
+    echo "• Dracut updates: ${DRACUT_COUNT:-0} (updated: ${DRACUT_UPDATED:-false})"
+    echo "• Kernel updates: ${KERNEL_COUNT:-0} (updated: $KERNEL_UPDATED)"
+    echo "• DKMS updates: ${DKMS_COUNT:-0} (updated: ${DKMS_UPDATED:-false})"
     
     echo ""
     echo "Files:"
@@ -586,7 +735,7 @@ show_recommendations() {
     fi
     
     # ZFS-specific recommendations
-    if [ "${ZFS_COUNT:-0}" -gt 0 ]; then
+    if [ "${ZFS_UPDATED:-false}" = "true" ]; then
         echo ""
         echo "ZFS Update Notes:"
         echo "• ZFS was updated successfully"
@@ -595,12 +744,39 @@ show_recommendations() {
         fi
     fi
     
+    # Dracut-specific recommendations
+    if [ "${DRACUT_UPDATED:-false}" = "true" ]; then
+        echo ""
+        echo "Dracut Update Notes:"
+        echo "• Dracut was updated - initramfs should be rebuilt"
+        echo "• Verify boot functionality on next reboot"
+    fi
+    
+    # DKMS-specific recommendations
+    if [ "${DKMS_UPDATED:-false}" = "true" ] && [ "${DKMS_AVAILABLE:-false}" = "true" ]; then
+        echo ""
+        echo "DKMS Update Notes:"
+        echo "• DKMS was updated - modules should be rebuilt"
+        echo "• Verify module status: 'dkms status zfs'"
+    fi
+    
     # ZFSBootMenu specific
-    if [ "$ZFSBOOTMENU" = true ] && [ "$KERNEL_UPDATED" = true ]; then
+    if [ "$ZFSBOOTMENU" = true ] && ([ "$KERNEL_UPDATED" = true ] || [ "${ZFS_UPDATED:-false}" = "true" ]); then
         echo ""
         echo "ZFSBootMenu Notes:"
-        echo "• ZFSBootMenu image should be updated for new kernel"
+        echo "• ZFSBootMenu image should be updated for changes"
         echo "• Verify boot functionality on next reboot"
+        if [ "${KERNEL_MISMATCH:-false}" = true ]; then
+            echo "• After reboot, ZFSBootMenu should show new kernel"
+        fi
+    fi
+    
+    # Rollback information
+    if [ -n "${INSTALL_SNAPSHOT_NAME:-}" ]; then
+        echo ""
+        echo "Rollback Information:"
+        echo "• Installation snapshots created: ${INSTALL_SNAPSHOT_NAME}"
+        echo "• Rollback possible if issues arise"
     fi
 }
 
