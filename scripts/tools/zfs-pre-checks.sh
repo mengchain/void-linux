@@ -60,6 +60,24 @@ check_root() {
     fi
 }
 
+validate_dependencies() {
+    info "Validating system dependencies..."
+    local deps="xbps-install zpool zfs findmnt df grep awk sed mkdir cp"
+    local missing_deps=""
+    
+    for cmd in $deps; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps="$missing_deps $cmd"
+        fi
+    done
+    
+    if [ -n "$missing_deps" ]; then
+        error_exit "Required commands not found:$missing_deps"
+    fi
+    
+    success "All required dependencies available"
+}
+
 create_initial_config() {
     cat > "$CONFIG_FILE" << EOF
 # ZFS Update Configuration
@@ -67,7 +85,7 @@ create_initial_config() {
 BACKUP_DIR="$BACKUP_DIR"
 LOG_FILE="$LOG_FILE"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-SCRIPT_VERSION="1.0"
+SCRIPT_VERSION="1.1"
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -81,28 +99,45 @@ check_available_updates() {
     fi
     success "Package database synced"
     
-    # Check for ZFS updates
-    ZFS_UPDATES=$(xbps-install -un 2>/dev/null | grep "zfs" || true)
-    ZFS_COUNT=$(echo "$ZFS_UPDATES" | grep -c "zfs" || echo "0")
+    # Check for ZFS-specific updates with improved patterns
+    ZFS_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "^(zfs|zfsbootmenu)-" || true)
+    ZFS_COUNT=$(echo "$ZFS_UPDATES" | grep -c -E "^(zfs|zfsbootmenu)-" 2>/dev/null || echo "0")
     
-    # Check for kernel updates
-    KERNEL_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "linux[0-9]*-[0-9]" || true)
-    KERNEL_COUNT=$(echo "$KERNEL_UPDATES" | grep -c -E "linux[0-9]*-[0-9]" || echo "0")
+    # Check for dracut updates
+    DRACUT_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "^dracut-" || true)
+    DRACUT_COUNT=$(echo "$DRACUT_UPDATES" | grep -c -E "^dracut-" 2>/dev/null || echo "0")
+    
+    # Check for kernel updates with improved pattern
+    KERNEL_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "^linux[0-9]+-[0-9]" || true)
+    KERNEL_COUNT=$(echo "$KERNEL_UPDATES" | grep -c -E "^linux[0-9]+-[0-9]" 2>/dev/null || echo "0")
     
     # Check for firmware updates
-    FIRMWARE_UPDATES=$(xbps-install -un 2>/dev/null | grep "linux-firmware" || true)
-    FIRMWARE_COUNT=$(echo "$FIRMWARE_UPDATES" | grep -c "linux-firmware" || echo "0")
+    FIRMWARE_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "^linux-firmware" || true)
+    FIRMWARE_COUNT=$(echo "$FIRMWARE_UPDATES" | grep -c -E "^linux-firmware" 2>/dev/null || echo "0")
+    
+    # Check for DKMS updates if available
+    DKMS_UPDATES=$(xbps-install -un 2>/dev/null | grep -E "^dkms" || true)
+    DKMS_COUNT=$(echo "$DKMS_UPDATES" | grep -c -E "^dkms" 2>/dev/null || echo "0")
     
     # Log findings
     info "Update availability results:"
-    log "  ZFS updates: $ZFS_COUNT packages"
+    log "  ZFS/ZFSBootMenu updates: $ZFS_COUNT packages"
+    log "  Dracut updates: $DRACUT_COUNT packages"
     log "  Kernel updates: $KERNEL_COUNT packages"
     log "  Firmware updates: $FIRMWARE_COUNT packages"
+    log "  DKMS updates: $DKMS_COUNT packages"
     
     # Show detailed update information
     if [ -n "$ZFS_UPDATES" ]; then
-        info "ZFS updates available:"
+        info "ZFS/ZFSBootMenu updates available:"
         echo "$ZFS_UPDATES" | while IFS= read -r line; do
+            [ -n "$line" ] && log "  $line"
+        done
+    fi
+    
+    if [ -n "$DRACUT_UPDATES" ]; then
+        info "Dracut updates available:"
+        echo "$DRACUT_UPDATES" | while IFS= read -r line; do
             [ -n "$line" ] && log "  $line"
         done
     fi
@@ -121,8 +156,15 @@ check_available_updates() {
         done
     fi
     
+    if [ -n "$DKMS_UPDATES" ]; then
+        info "DKMS updates available:"
+        echo "$DKMS_UPDATES" | while IFS= read -r line; do
+            [ -n "$line" ] && log "  $line"
+        done
+    fi
+    
     # Determine if we have any relevant updates
-    TOTAL_UPDATES=$((ZFS_COUNT + KERNEL_COUNT + FIRMWARE_COUNT))
+    TOTAL_UPDATES=$((ZFS_COUNT + DRACUT_COUNT + KERNEL_COUNT + FIRMWARE_COUNT + DKMS_COUNT))
     
     if [ "$TOTAL_UPDATES" -eq 0 ]; then
         header "NO UPDATES AVAILABLE"
@@ -134,21 +176,25 @@ check_available_updates() {
             echo "UPDATES_AVAILABLE=false"
             echo "TOTAL_UPDATES=0"
             echo "ZFS_COUNT=0"
+            echo "DRACUT_COUNT=0"
             echo "KERNEL_COUNT=0"
             echo "FIRMWARE_COUNT=0"
+            echo "DKMS_COUNT=0"
         } >> "$CONFIG_FILE"
         
         return 1  # No updates needed
     else
-        success "Found $TOTAL_UPDATES ZFS/kernel/firmware updates"
+        success "Found $TOTAL_UPDATES ZFS/kernel/firmware/dracut updates"
         
         # Save update information to config
         {
             echo "UPDATES_AVAILABLE=true"
             echo "TOTAL_UPDATES=$TOTAL_UPDATES"
             echo "ZFS_COUNT=$ZFS_COUNT"
+            echo "DRACUT_COUNT=$DRACUT_COUNT"
             echo "KERNEL_COUNT=$KERNEL_COUNT"
             echo "FIRMWARE_COUNT=$FIRMWARE_COUNT"
+            echo "DKMS_COUNT=$DKMS_COUNT"
         } >> "$CONFIG_FILE"
         
         return 0  # Updates available
@@ -171,6 +217,80 @@ check_zfs_loaded() {
     fi
     
     success "ZFS module and tools are available"
+}
+
+check_dracut_available() {
+    info "Checking dracut availability..."
+    
+    if ! command -v dracut >/dev/null 2>&1; then
+        error_exit "dracut command not found. Install dracut package."
+    fi
+    
+    # Check dracut configuration
+    if [ ! -f /etc/dracut.conf ] && [ ! -d /etc/dracut.conf.d ]; then
+        warning "No dracut configuration found. Default settings will be used."
+    fi
+    
+    # Check if dracut has ZFS support
+    if ! dracut --list-modules 2>/dev/null | grep -q zfs; then
+        warning "dracut may not have ZFS module support"
+    fi
+    
+    success "dracut is available"
+}
+
+check_dkms_status() {
+    info "Checking DKMS status..."
+    
+    if command -v dkms >/dev/null 2>&1; then
+        DKMS_STATUS=$(dkms status zfs 2>/dev/null || echo "not found")
+        log "DKMS ZFS status: $DKMS_STATUS"
+        
+        if echo "$DKMS_STATUS" | grep -q "installed"; then
+            success "DKMS ZFS module is properly installed"
+            echo "DKMS_AVAILABLE=true" >> "$CONFIG_FILE"
+            echo "DKMS_STATUS=\"$DKMS_STATUS\"" >> "$CONFIG_FILE"
+        elif echo "$DKMS_STATUS" | grep -q "built"; then
+            info "DKMS ZFS module is built but not installed"
+            echo "DKMS_AVAILABLE=true" >> "$CONFIG_FILE"
+            echo "DKMS_STATUS=\"$DKMS_STATUS\"" >> "$CONFIG_FILE"
+        else
+            warning "DKMS ZFS module status unclear: $DKMS_STATUS"
+            echo "DKMS_AVAILABLE=false" >> "$CONFIG_FILE"
+            echo "DKMS_STATUS=\"$DKMS_STATUS\"" >> "$CONFIG_FILE"
+        fi
+    else
+        info "DKMS not available - using pre-built kernel modules"
+        echo "DKMS_AVAILABLE=false" >> "$CONFIG_FILE"
+        echo "DKMS_STATUS=\"not available\"" >> "$CONFIG_FILE"
+    fi
+}
+
+check_zfs_specific_updates() {
+    info "Checking ZFS-specific package updates..."
+    
+    ZFS_PACKAGES="zfs zfs-dkms zfsbootmenu dracut"
+    ZFS_SPECIFIC_UPDATES=""
+    ZFS_SPECIFIC_COUNT=0
+    
+    for pkg in $ZFS_PACKAGES; do
+        if xbps-install -un 2>/dev/null | grep -q "^${pkg}-"; then
+            ZFS_SPECIFIC_UPDATES="$ZFS_SPECIFIC_UPDATES $pkg"
+            ZFS_SPECIFIC_COUNT=$((ZFS_SPECIFIC_COUNT + 1))
+        fi
+    done
+    
+    if [ -n "$ZFS_SPECIFIC_UPDATES" ]; then
+        info "ZFS-related packages with updates:$ZFS_SPECIFIC_UPDATES"
+        echo "ZFS_SPECIFIC_UPDATES=\"$ZFS_SPECIFIC_UPDATES\"" >> "$CONFIG_FILE"
+        echo "ZFS_SPECIFIC_COUNT=$ZFS_SPECIFIC_COUNT" >> "$CONFIG_FILE"
+        return 0
+    else
+        info "No ZFS-specific package updates found"
+        echo "ZFS_SPECIFIC_UPDATES=\"\"" >> "$CONFIG_FILE"
+        echo "ZFS_SPECIFIC_COUNT=0" >> "$CONFIG_FILE"
+        return 1
+    fi
 }
 
 detect_zfsbootmenu() {
@@ -200,6 +320,7 @@ detect_zfsbootmenu() {
         ZBM_DETECTED=true
         ZBM_VERSION=$(zfsbootmenu --version 2>/dev/null || echo "unknown")
         info "ZFSBootMenu command available, version: $ZBM_VERSION"
+        echo "ZBM_VERSION=\"$ZBM_VERSION\"" >> "$CONFIG_FILE"
     fi
     
     if [ "$ZBM_DETECTED" = true ]; then
@@ -218,9 +339,13 @@ check_system_versions() {
     CURRENT_ZFS=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
     ZFS_USERLAND=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
     
+    # Get dracut version if available
+    DRACUT_VERSION=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
+    
     log "Current kernel: $CURRENT_KERNEL"
     log "ZFS kernel module: $CURRENT_ZFS"
     log "ZFS userland: $ZFS_USERLAND"
+    log "Dracut version: $DRACUT_VERSION"
     
     # Check for version mismatch
     if [ "$CURRENT_ZFS" != "unknown" ] && [ "$ZFS_USERLAND" != "unknown" ] && [ "$CURRENT_ZFS" != "$ZFS_USERLAND" ]; then
@@ -235,6 +360,7 @@ check_system_versions() {
         echo "CURRENT_KERNEL=\"$CURRENT_KERNEL\""
         echo "CURRENT_ZFS=\"$CURRENT_ZFS\""
         echo "ZFS_USERLAND=\"$ZFS_USERLAND\""
+        echo "DRACUT_VERSION=\"$DRACUT_VERSION\""
     } >> "$CONFIG_FILE"
 }
 
@@ -268,7 +394,7 @@ check_pool_health() {
 }
 
 check_zbm_boot_pool() {
-    if [ "$ZBM_DETECTED" != true ]; then
+    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
         return 0
     fi
     
@@ -300,7 +426,7 @@ check_zbm_boot_pool() {
 }
 
 check_zbm_esp() {
-    if [ "$ZBM_DETECTED" != true ]; then
+    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
         return 0
     fi
     
@@ -312,8 +438,8 @@ check_zbm_esp() {
         error_exit "EFI System Partition not found. ZFSBootMenu requires ESP."
     fi
     
-    ESP_USAGE=$(df "$ESP_MOUNT" | awk 'NR==2 {print $5}' | sed 's/%//')
-    ESP_FREE_MB=$(df -m "$ESP_MOUNT" | awk 'NR==2 {print $4}')
+    ESP_USAGE=$(df "$ESP_MOUNT" | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
+    ESP_FREE_MB=$(df -m "$ESP_MOUNT" | awk 'NR==2 {print $4}' || echo "0")
     
     if [ "$ESP_USAGE" -gt 80 ]; then
         warning "EFI System Partition is ${ESP_USAGE}% full"
@@ -342,16 +468,16 @@ check_zbm_esp() {
 check_disk_space() {
     info "Checking disk space..."
     
-    ROOT_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
-    ROOT_FREE_MB=$(df -m / | awk 'NR==2 {print $4}')
+    ROOT_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
+    ROOT_FREE_MB=$(df -m / | awk 'NR==2 {print $4}' || echo "0")
     
     if [ "$ROOT_USAGE" -gt 90 ]; then
         error_exit "Root filesystem is ${ROOT_USAGE}% full. Need space for updates."
     fi
     
     if mountpoint -q /boot 2>/dev/null; then
-        BOOT_USAGE=$(df /boot | awk 'NR==2 {print $5}' | sed 's/%//')
-        BOOT_FREE_MB=$(df -m /boot | awk 'NR==2 {print $4}')
+        BOOT_USAGE=$(df /boot | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
+        BOOT_FREE_MB=$(df -m /boot | awk 'NR==2 {print $4}' || echo "0")
         
         if [ "$BOOT_USAGE" -gt 80 ]; then
             warning "Boot partition is ${BOOT_USAGE}% full"
@@ -362,7 +488,7 @@ check_disk_space() {
         fi
     fi
     
-    BACKUP_FREE_MB=$(df -m "$(dirname "$BACKUP_DIR")" | awk 'NR==2 {print $4}')
+    BACKUP_FREE_MB=$(df -m "$(dirname "$BACKUP_DIR")" | awk 'NR==2 {print $4}' || echo "0")
     if [ "$BACKUP_FREE_MB" -lt 1024 ]; then
         warning "Less than 1GB available for backups"
     fi
@@ -383,6 +509,11 @@ check_running_processes() {
         warning "Backup processes detected - consider waiting for completion"
     fi
     
+    # Check for package manager processes
+    if pgrep -f "xbps-install" >/dev/null 2>&1; then
+        error_exit "Another xbps-install process is running. Wait for completion."
+    fi
+    
     success "Process check completed"
 }
 
@@ -398,6 +529,7 @@ create_backups() {
             zpool list -H > "$BACKUP_DIR/zpool-list.txt"
             zfs get all > "$BACKUP_DIR/zfs-properties.txt"
             zpool get all > "$BACKUP_DIR/zpool-properties.txt"
+            zfs list -t snapshot > "$BACKUP_DIR/zfs-snapshots.txt" 2>/dev/null || true
         } 2>/dev/null || warning "Some ZFS backup commands failed"
     fi
     
@@ -416,11 +548,16 @@ create_backups() {
         cp -r /etc/dracut.conf.d "$BACKUP_DIR/" 2>/dev/null || true
     fi
     
+    # Backup modprobe configs that might affect ZFS
+    if [ -d /etc/modprobe.d ]; then
+        cp /etc/modprobe.d/*.conf "$BACKUP_DIR/" 2>/dev/null || true
+    fi
+    
     success "System configuration backup created"
 }
 
 backup_zbm_configuration() {
-    if [ "$ZBM_DETECTED" != true ]; then
+    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
         return 0
     fi
     
@@ -445,10 +582,8 @@ backup_zbm_configuration() {
     success "ZFSBootMenu configuration backed up"
 }
 
-# Add this after backup_zbm_configuration() function:
-
 backup_esp_completely() {
-    if [ "$ZFSBOOTMENU" != true ]; then
+    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
         return 0
     fi
     
@@ -493,6 +628,7 @@ main() {
     log "Starting ZFS pre-update checks..."
     
     check_root
+    validate_dependencies
     create_initial_config
     
     # CRITICAL: Check for updates FIRST
@@ -505,6 +641,9 @@ main() {
     header "UPDATES FOUND - PERFORMING SYSTEM CHECKS"
     
     check_zfs_loaded
+    check_dracut_available
+    check_dkms_status
+    check_zfs_specific_updates
     detect_zfsbootmenu
     check_system_versions
     check_pool_health
@@ -514,13 +653,13 @@ main() {
     check_running_processes
     create_backups
     backup_zbm_configuration
-	backup_esp_completely
+    backup_esp_completely
     
     header "PRE-CHECKS COMPLETED SUCCESSFULLY"
     
     success "All pre-update checks passed!"
-    log "System type: $([ "$ZBM_DETECTED" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
-    log "Updates found: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT})"
+    log "System type: $([ "${ZBM_DETECTED:-false}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional")"
+    log "Updates found: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, Dracut: ${DRACUT_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT}, DKMS: ${DKMS_COUNT})"
     log "Backup directory: $BACKUP_DIR"
     log "Configuration saved to: $CONFIG_FILE"
     log "Ready to proceed with updates"
@@ -529,8 +668,8 @@ main() {
     echo "=========================================="
     echo -e "${GREEN}✓ PRE-CHECKS COMPLETED SUCCESSFULLY${NC}"
     echo "=========================================="
-    echo "System type: $([ "$ZBM_DETECTED" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
-    echo "Updates: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT})"
+    echo "System type: $([ "${ZBM_DETECTED:-false}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional")"
+    echo "Updates: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, Dracut: ${DRACUT_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT}, DKMS: ${DKMS_COUNT})"
     echo "Backup: $BACKUP_DIR"
     echo "Log: $LOG_FILE"
     echo ""
