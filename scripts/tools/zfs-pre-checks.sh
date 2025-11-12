@@ -5,20 +5,31 @@
 
 set -euo pipefail
 
-# Global configuration - these are intentionally global
-readonly LOG_FILE="/var/log/zfs-pre-checks-$(date +%Y%m%d-%H%M%S).log"
-readonly BACKUP_DIR="/var/backups/zfs-update-$(date +%Y%m%d-%H%M%S)"
-readonly CONFIG_FILE="/etc/zfs-update.conf"
-readonly SCRIPT_VERSION="1.2"
+# Configuration
+LOG_FILE="/var/log/zfs-pre-checks-$(date +%Y%m%d-%H%M%S).log"
+BACKUP_DIR="/var/backups/zfs-update-$(date +%Y%m%d-%H%M%S)"
+CONFIG_FILE="/etc/zfs-update.conf"
+ZBM_CONFIG="/etc/zfsbootmenu/config.yaml"
+
+# Global variables for cross-function use
+ZBM_DETECTED=false
+TOTAL_UPDATES=0
+ZFS_COUNT=0
+ZBM_COUNT=0
+DRACUT_COUNT=0
+KERNEL_COUNT=0
+FIRMWARE_COUNT=0
+ESP_MOUNT=""
+ZBM_EFI_PATH=""
 
 # Colors for output
-readonly RED='\033[0;31m'
-readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[1;33m'
-readonly BLUE='\033[0;34m'
-readonly CYAN='\033[0;36m'
-readonly BOLD='\033[1m'
-readonly NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
 
 log() {
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -61,11 +72,10 @@ check_root() {
 }
 
 validate_dependencies() {
-    local deps="xbps-install xbps-query zpool zfs findmnt df grep awk sed mkdir cp bc modinfo lsmod"
+    info "Validating system dependencies..."
+    local deps="xbps-install zpool zfs findmnt df grep awk sed mkdir cp bc"
     local missing_deps=""
     local cmd
-    
-    info "Validating system dependencies..."
     
     for cmd in $deps; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -91,7 +101,7 @@ create_initial_config() {
 BACKUP_DIR="$BACKUP_DIR"
 LOG_FILE="$LOG_FILE"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-SCRIPT_VERSION="$SCRIPT_VERSION"
+SCRIPT_VERSION="1.2"
 VOID_LINUX=true
 
 # System detection
@@ -108,33 +118,43 @@ EOF
 }
 
 check_available_updates() {
-    local all_updates zfs_updates zbm_updates dracut_updates kernel_updates firmware_updates
-    local zfs_count zbm_count dracut_count kernel_count firmware_count total_updates
-    
     header "CHECKING FOR AVAILABLE UPDATES"
     
     info "Syncing package database..."
-    if ! xbps-install -S >/dev/null 2>&1; then
+    if ! xbps-install -S; then
         error_exit "Failed to sync package database. Check network connection."
     fi
     success "Package database synced"
     
+    # Localize ALL variables
+    local all_updates zfs_updates zfs_count zbm_updates zbm_count
+    local dracut_updates dracut_count kernel_updates kernel_count
+    local firmware_updates firmware_count total_updates
+    
     # Get all available updates first
     all_updates=$(xbps-install -un 2>/dev/null || true)
     
-    # Check for ZFS-specific updates - Fixed regex for Void Linux package naming
+    # Check for ZFS-specific updates (more precise matching)
     zfs_updates=$(echo "$all_updates" | grep -E "^zfs-[0-9]" || true)
     zfs_count=$(echo "$zfs_updates" | grep -c "^zfs-" 2>/dev/null || echo "0")
     
-    # Check for ZFSBootMenu updates
+    # Check for ZFSBootMenu updates - try multiple patterns
     zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu-[0-9]" || true)
-    zbm_count=$(echo "$zbm_updates" | grep -c "^zfsbootmenu-" 2>/dev/null || echo "0")
+    if [ -z "$zbm_updates" ]; then
+        # Try without hyphen in case package name is just 'zfsbootmenu'
+        zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu[[:space:]]" || true)
+    fi
+    if [ -n "$zbm_updates" ]; then
+        zbm_count=$(echo "$zbm_updates" | wc -l)
+    else
+        zbm_count=0
+    fi
     
     # Check for dracut updates
     dracut_updates=$(echo "$all_updates" | grep -E "^dracut-[0-9]" || true)
     dracut_count=$(echo "$dracut_updates" | grep -c "^dracut-" 2>/dev/null || echo "0")
     
-    # Void Linux kernel package naming: linux6.6, linux6.1, etc.
+    # Check for kernel updates (Void uses linux<version> packages)
     kernel_updates=$(echo "$all_updates" | grep -E "^linux[0-9]+\.[0-9]+-[0-9]" || true)
     kernel_count=$(echo "$kernel_updates" | grep -c -E "^linux[0-9]+\.[0-9]+" 2>/dev/null || echo "0")
     
@@ -144,21 +164,6 @@ check_available_updates() {
     
     # Calculate total relevant updates
     total_updates=$((zfs_count + zbm_count + dracut_count + kernel_count + firmware_count))
-    
-    # Log findings with improved detail
-    info "Update availability results:"
-    log "  ZFS updates: $zfs_count packages"
-    log "  ZFSBootMenu updates: $zbm_count packages"
-    log "  Dracut updates: $dracut_count packages"
-    log "  Kernel updates: $kernel_count packages"
-    log "  Firmware updates: $firmware_count packages"
-    
-    # Show detailed update information if available
-    [ -n "$zfs_updates" ] && info "ZFS updates available:" && echo "$zfs_updates" | while IFS= read -r line; do [ -n "$line" ] && log "  $line"; done
-    [ -n "$zbm_updates" ] && info "ZFSBootMenu updates available:" && echo "$zbm_updates" | while IFS= read -r line; do [ -n "$line" ] && log "  $line"; done
-    [ -n "$dracut_updates" ] && info "Dracut updates available:" && echo "$dracut_updates" | while IFS= read -r line; do [ -n "$line" ] && log "  $line"; done
-    [ -n "$kernel_updates" ] && info "Kernel updates available:" && echo "$kernel_updates" | while IFS= read -r line; do [ -n "$line" ] && log "  $line"; done
-    [ -n "$firmware_updates" ] && info "Firmware updates available:" && echo "$firmware_updates" | while IFS= read -r line; do [ -n "$line" ] && log "  $line"; done
     
     if [ "$total_updates" -eq 0 ]; then
         header "NO UPDATES AVAILABLE"
@@ -180,7 +185,7 @@ check_available_updates() {
     else
         success "Found $total_updates ZFS/kernel/firmware/dracut updates"
         
-        # Save update information to config - Make variables global for later use
+        # Save update information to config
         {
             echo "UPDATES_AVAILABLE=true"
             echo "TOTAL_UPDATES=$total_updates"
@@ -191,42 +196,37 @@ check_available_updates() {
             echo "FIRMWARE_COUNT=$firmware_count"
         } >> "$CONFIG_FILE"
         
-        # Export for use in summary
-        export TOTAL_UPDATES="$total_updates"
-        export ZFS_COUNT="$zfs_count"
-        export ZBM_COUNT="$zbm_count"
-        export DRACUT_COUNT="$dracut_count"
-        export KERNEL_COUNT="$kernel_count"
-        export FIRMWARE_COUNT="$firmware_count"
+        # Export for use in main function summary
+        TOTAL_UPDATES=$total_updates
+        ZFS_COUNT=$zfs_count
+        ZBM_COUNT=$zbm_count
+        DRACUT_COUNT=$dracut_count
+        KERNEL_COUNT=$kernel_count
+        FIRMWARE_COUNT=$firmware_count
         
         return 0  # Updates available
     fi
 }
 
 check_zfs_loaded() {
-    local zfs_loaded zpool_available zfs_available
-    
     info "Checking ZFS module status..."
     
-    zfs_loaded=$(lsmod | grep -c "^zfs " || echo "0")
-    if [ "$zfs_loaded" -eq 0 ]; then
+    if ! lsmod | grep -q zfs; then
         error_exit "ZFS module is not loaded. Load it with: modprobe zfs"
     fi
     
     if ! command -v zpool >/dev/null 2>&1; then
-        error_exit "zpool command not found. Install zfs package."
+        error_exit "ZFS userland tools not found. Install zfs package."
     fi
     
     if ! command -v zfs >/dev/null 2>&1; then
-        error_exit "zfs command not found. Install zfs package."
+        error_exit "ZFS userland tools not found. Install zfs package."
     fi
     
     success "ZFS module and tools are available"
 }
 
 check_dracut_available() {
-    local dracut_modules_dir zfs_module_found
-    
     info "Checking dracut availability..."
     
     if ! command -v dracut >/dev/null 2>&1; then
@@ -238,83 +238,60 @@ check_dracut_available() {
         warning "No dracut configuration found. Default settings will be used."
     fi
     
-    # Check for ZFS module in dracut - Void Linux specific paths
-    zfs_module_found=false
-    for dracut_modules_dir in "/usr/lib/dracut/modules.d" "/usr/share/dracut/modules.d"; do
-        if [ -d "$dracut_modules_dir/90zfs" ]; then
-            zfs_module_found=true
-            info "Found dracut ZFS module in $dracut_modules_dir/90zfs"
+    # Check for ZFS dracut module in common locations
+    local dracut_zfs_found=false
+    local dracut_module_dirs="/usr/lib/dracut/modules.d /usr/share/dracut/modules.d"
+    local module_dir
+    
+    for module_dir in $dracut_module_dirs; do
+        if [ -d "$module_dir/90zfs" ]; then
+            dracut_zfs_found=true
+            info "Found ZFS dracut module in $module_dir"
             break
         fi
     done
     
-    if [ "$zfs_module_found" = "false" ]; then
-        error_exit "dracut ZFS module not found. Ensure zfs package is properly installed."
-    fi
-    
-    # Test if dracut can list ZFS module
-    if dracut --list-modules 2>/dev/null | grep -q "^zfs$"; then
-        success "dracut ZFS module is available and detectable"
-    else
-        warning "dracut may not detect ZFS module properly - this might be normal"
+    if [ "$dracut_zfs_found" = false ]; then
+        error_exit "dracut ZFS support not available. Install zfs package."
     fi
     
     success "dracut is available with ZFS support"
 }
 
 check_void_services() {
-    local active_services service service_name critical_services
-    
     info "Checking Void Linux specific services..."
     
-    # Services that should generally be left running during updates
-    critical_services="sshd chronyd dbus dhcpcd wpa_supplicant NetworkManager"
-    
+    # Check if any services are using ZFS datasets
     if command -v sv >/dev/null 2>&1; then
-        # Get list of running services
+        local active_services service service_name
+        # Check for services that might be using ZFS
         active_services=$(sv status /var/service/* 2>/dev/null | grep "^run:" | awk '{print $2}' || true)
         
-        if [ -n "$active_services" ]; then
-            info "Active runit services detected:"
-            for service in $active_services; do
-                service_name=$(basename "$service")
-                
-                # Check if it's a critical service
-                if echo "$critical_services" | grep -q "$service_name"; then
-                    log "  ✓ $service_name (critical - keep running)"
-                else
-                    log "  ○ $service_name"
-                fi
-            done
-        else
-            info "No active services detected via runit"
-        fi
-    else
-        warning "runit service manager (sv) not found"
+        for service in $active_services; do
+            service_name=$(basename "$service")
+            if [ "$service_name" = "sshd" ] || [ "$service_name" = "chronyd" ] || [ "$service_name" = "dbus" ]; then
+                # These are typically safe to keep running
+                continue
+            fi
+            log "Active service detected: $service_name"
+        done
     fi
     
     success "Void services check completed"
 }
 
 check_zfs_specific_updates() {
-    local zfs_packages pkg zfs_specific_updates zfs_specific_count
-    local installed_pkg
-    
     info "Checking ZFS-specific package updates..."
     
-    # Void Linux ZFS-related packages
-    zfs_packages="zfs zfsbootmenu dracut"
-    zfs_specific_updates=""
-    zfs_specific_count=0
+    local zfs_packages="zfs zfsbootmenu dracut"
+    local zfs_specific_updates=""
+    local zfs_specific_count=0
+    local pkg
     
     for pkg in $zfs_packages; do
-        # Check if package is installed first
-        if xbps-query -l | grep -q "^ii $pkg-"; then
-            # Check if update is available
-            if xbps-install -un 2>/dev/null | grep -q "^${pkg}-"; then
-                zfs_specific_updates="$zfs_specific_updates $pkg"
-                zfs_specific_count=$((zfs_specific_count + 1))
-            fi
+        if xbps-install -un 2>/dev/null | grep -q "^${pkg}-"; then
+            zfs_specific_updates="$zfs_specific_updates $pkg"
+            zfs_specific_count=$((zfs_specific_count + 1))
         fi
     done
     
@@ -332,94 +309,71 @@ check_zfs_specific_updates() {
 }
 
 detect_zfsbootmenu() {
-    local zbm_detected zbm_config zbm_config_paths config_path zbm_version
-    
     info "Detecting boot method..."
     
-    zbm_detected=false
-    zbm_config=""
+    local zbm_detected=false
+    local zbm_config_paths="/etc/zfsbootmenu/config.yaml /etc/zfsbootmenu.yaml /usr/share/zfsbootmenu/config.yaml"
+    local config_path
     
-    # ZFSBootMenu config locations per official documentation
-    zbm_config_paths="/etc/zfsbootmenu/config.yaml /etc/zfsbootmenu.yaml"
-    
+    # Check multiple possible config locations
     for config_path in $zbm_config_paths; do
         if [ -f "$config_path" ]; then
-            zbm_config="$config_path"
+            ZBM_CONFIG="$config_path"
             zbm_detected=true
-            info "ZFSBootMenu configuration found: $zbm_config"
-            echo "ZBM_CONFIG=\"$zbm_config\"" >> "$CONFIG_FILE"
+            info "ZFSBootMenu configuration found: $ZBM_CONFIG"
             break
         fi
     done
     
-    # Check EFI boot entries
     if command -v efibootmgr >/dev/null 2>&1; then
-        if efibootmgr 2>/dev/null | grep -qi "zfsbootmenu\|zbm"; then
+        if efibootmgr 2>/dev/null | grep -qi "zfsbootmenu\|ZBM"; then
             zbm_detected=true
             info "ZFSBootMenu found in EFI boot entries"
         fi
     fi
     
-    # Check current boot parameters
-    if [ -f /proc/cmdline ] && grep -q "zfsbootmenu" /proc/cmdline 2>/dev/null; then
-        zbm_detected=true
-        info "ZFSBootMenu detected in current boot parameters"
-    fi
-    
-    # Check for ZFSBootMenu command
-    if command -v zfsbootmenu >/dev/null 2>&1; then
-        zbm_detected=true
-        zbm_version=$(zfsbootmenu --version 2>/dev/null | head -1 || echo "unknown")
-        info "ZFSBootMenu command available, version: $zbm_version"
-        echo "ZBM_VERSION=\"$zbm_version\"" >> "$CONFIG_FILE"
-    fi
-    
-    # Check for generate-zbm command (common ZBM tool)
     if command -v generate-zbm >/dev/null 2>&1; then
         zbm_detected=true
-        info "generate-zbm command found"
+        local zbm_version
+        zbm_version=$(generate-zbm --version 2>/dev/null | head -1 || echo "unknown")
+        info "ZFSBootMenu tools available, version: $zbm_version"
+        echo "ZBM_VERSION=\"$zbm_version\"" >> "$CONFIG_FILE"
     fi
     
     if [ "$zbm_detected" = true ]; then
         success "ZFSBootMenu system detected"
         echo "ZFSBOOTMENU=true" >> "$CONFIG_FILE"
-        export ZBM_DETECTED="true"
-        export ZBM_CONFIG="$zbm_config"
+        ZBM_DETECTED=true
     else
-        info "Traditional bootloader system (GRUB/systemd-boot)"
+        info "Traditional bootloader system"
         echo "ZFSBOOTMENU=false" >> "$CONFIG_FILE"
-        export ZBM_DETECTED="false"
+        ZBM_DETECTED=false
     fi
 }
 
 check_system_versions() {
-    local current_kernel current_zfs zfs_userland dracut_version
-    local zfs_kmod_version
-    
     info "Checking current system versions..."
+    
+    local current_kernel current_zfs zfs_userland dracut_version
     
     current_kernel=$(uname -r)
     
-    # Get ZFS kernel module version more reliably
-    if current_zfs=$(modinfo zfs 2>/dev/null | awk '/^version:/ {print $2}'); then
-        [ -z "$current_zfs" ] && current_zfs="unknown"
+    # More reliable ZFS version detection
+    if command -v zfs >/dev/null 2>&1; then
+        current_zfs=$(zfs version 2>/dev/null | grep -E "^zfs-kmod" | awk '{print $2}' || echo "unknown")
+        zfs_userland=$(zfs version 2>/dev/null | grep -E "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
+        
+        # Fallback to modinfo if zfs version doesn't work
+        if [ "$current_zfs" = "unknown" ]; then
+            current_zfs=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
+        fi
     else
         current_zfs="unknown"
-    fi
-    
-    # Get ZFS userland version
-    if zfs_userland=$(zfs version 2>/dev/null | head -1 | awk '{print $2}'); then
-        [ -z "$zfs_userland" ] && zfs_userland="unknown"
-    else
         zfs_userland="unknown"
     fi
     
-    # Get dracut version
-    if dracut_version=$(dracut --version 2>/dev/null | head -1 | awk '{print $NF}'); then
-        [ -z "$dracut_version" ] && dracut_version="unknown"
-    else
-        dracut_version="unknown"
-    fi
+    # Get dracut version if available
+    dracut_version=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
     
     log "Current kernel: $current_kernel"
     log "ZFS kernel module: $current_zfs"
@@ -427,13 +381,11 @@ check_system_versions() {
     log "Dracut version: $dracut_version"
     
     # Check for version mismatch
-    if [ "$current_zfs" != "unknown" ] && [ "$zfs_userland" != "unknown" ]; then
-        if [ "$current_zfs" != "$zfs_userland" ]; then
-            warning "ZFS kernel module ($current_zfs) and userland ($zfs_userland) versions differ"
-            warning "This is normal if updates are available"
-        else
-            success "ZFS kernel and userland versions match"
-        fi
+    if [ "$current_zfs" != "unknown" ] && [ "$zfs_userland" != "unknown" ] && [ "$current_zfs" != "$zfs_userland" ]; then
+        warning "ZFS kernel module ($current_zfs) and userland ($zfs_userland) versions differ"
+        warning "This is normal if updates are available"
+    else
+        success "ZFS kernel and userland versions match"
     fi
     
     # Save version info
@@ -446,35 +398,28 @@ check_system_versions() {
 }
 
 check_pool_health() {
-    local pool_list pool_status pools_exist
-    
     info "Checking ZFS pool health..."
     
     if ! zpool list >/dev/null 2>&1; then
         warning "No ZFS pools found"
         echo "POOLS_EXIST=false" >> "$CONFIG_FILE"
-        export POOLS_EXIST="false"
         return 0
     fi
     
-    pools_exist="true"
     echo "POOLS_EXIST=true" >> "$CONFIG_FILE"
-    export POOLS_EXIST="true"
     
     info "Current pool status:"
     zpool status -v | tee -a "$LOG_FILE"
     
-    # Check for pool errors
-    pool_status=$(zpool status)
-    if echo "$pool_status" | grep -E "(DEGRADED|FAULTED|OFFLINE|UNAVAIL)" >/dev/null; then
+    if zpool status | grep -E "(DEGRADED|FAULTED|OFFLINE|UNAVAIL)"; then
         error_exit "ZFS pools have errors. Fix pool issues before updating."
     fi
     
-    if echo "$pool_status" | grep -q "scrub in progress"; then
+    if zpool status | grep -q "scrub in progress"; then
         error_exit "ZFS scrub is in progress. Wait for completion before updating."
     fi
     
-    if echo "$pool_status" | grep -q "resilver in progress"; then
+    if zpool status | grep -q "resilver in progress"; then
         error_exit "ZFS resilver is in progress. Wait for completion before updating."
     fi
     
@@ -482,83 +427,70 @@ check_pool_health() {
 }
 
 check_zbm_boot_pool() {
-    local boot_pools
-    
-    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
+    if [ "${ZBM_DETECTED}" != "true" ]; then
         return 0
     fi
     
-    info "Checking ZFSBootMenu boot pool configuration..."
+    info "Checking ZFS root pool configuration..."
     
-    # Find boot pools - common naming conventions
-    boot_pools=$(zpool list -H -o name 2>/dev/null | grep -E "(bpool|boot|rpool)" || true)
+    local boot_pools pool
     
-    # Try to detect from ZBM config if available
-    if [ -z "$boot_pools" ] && [ -n "${ZBM_CONFIG:-}" ] && [ -f "$ZBM_CONFIG" ]; then
+    # Check for root pool (typically 'zroot' based on installation script)
+    if zpool list zroot >/dev/null 2>&1; then
+        boot_pools="zroot"
+    else
+        # Fallback to other common names
+        boot_pools=$(zpool list -H -o name 2>/dev/null | grep -E "(bpool|boot|rpool)" || true)
+    fi
+    
+    if [ -z "$boot_pools" ] && [ -f "$ZBM_CONFIG" ]; then
+        # Try to detect from ZBM config
         boot_pools=$(grep -E "pool:" "$ZBM_CONFIG" 2>/dev/null | grep -v "^#" | awk -F: '{print $2}' | tr -d ' "' || true)
     fi
     
-    # If still no pools found, check for any pools (ZBM can work with any pool)
-    if [ -z "$boot_pools" ]; then
-        boot_pools=$(zpool list -H -o name 2>/dev/null | head -1 || true)
-        if [ -n "$boot_pools" ]; then
-            info "Using primary pool for ZFSBootMenu: $boot_pools"
-        fi
-    fi
-    
     if [ -n "$boot_pools" ]; then
-        info "Boot pool(s) detected: $boot_pools"
+        info "ZFS pool(s) detected: $boot_pools"
         echo "BOOT_POOLS=\"$boot_pools\"" >> "$CONFIG_FILE"
         
-        # Check each pool's health
         for pool in $boot_pools; do
             if ! zpool status "$pool" | grep -q "state: ONLINE"; then
-                error_exit "Boot pool $pool is not ONLINE. Fix before updating."
+                error_exit "Pool $pool is not ONLINE. Fix before updating."
             fi
         done
         
-        success "Boot pool(s) are healthy"
+        success "ZFS pool(s) are healthy"
     else
-        warning "No ZFS pools found for ZFSBootMenu"
+        warning "No ZFS pools found"
         echo "BOOT_POOLS=\"\"" >> "$CONFIG_FILE"
     fi
 }
 
 check_zbm_esp() {
-    local esp_candidates esp_mount esp_path esp_usage esp_free_mb zbm_efi_path
-    
-    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
+    if [ "${ZBM_DETECTED}" != "true" ]; then
         return 0
     fi
     
     info "Checking EFI System Partition for ZFSBootMenu..."
     
-    # Common ESP mount points in Void Linux
-    esp_candidates="/boot/efi /efi /boot"
-    esp_mount=""
+    local esp_candidates="/boot/efi /efi /boot"
+    local esp_mount="" esp_path
     
-    # Find mounted vfat filesystem (ESP)
     for esp_path in $esp_candidates; do
-        if [ -d "$esp_path" ] && findmnt -t vfat "$esp_path" >/dev/null 2>&1; then
+        if findmnt -t vfat "$esp_path" >/dev/null 2>&1; then
             esp_mount="$esp_path"
-            info "Found ESP mounted at: $esp_mount"
             break
         fi
     done
     
-    # If not found in common locations, try to find any vfat mount
     if [ -z "$esp_mount" ]; then
-        esp_mount=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1 || true)
-        if [ -n "$esp_mount" ]; then
-            info "Found ESP at: $esp_mount"
-        fi
+        esp_mount=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1)
     fi
     
     if [ -z "$esp_mount" ] || [ ! -d "$esp_mount" ]; then
         error_exit "EFI System Partition not found. ZFSBootMenu requires ESP."
     fi
     
-    # Check ESP space usage
+    local esp_usage esp_free_mb
     esp_usage=$(df "$esp_mount" | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
     esp_free_mb=$(df -m "$esp_mount" | awk 'NR==2 {print $4}' || echo "0")
     
@@ -567,73 +499,64 @@ check_zbm_esp() {
     fi
     
     if [ "$esp_free_mb" -lt 50 ]; then
-        error_exit "EFI System Partition has less than 50MB free space"
+        error_exit "EFI System Partition has less than 50MB free"
     fi
     
-    # Look for ZBM EFI files in common locations
-    zbm_efi_path=""
-    for zbm_path in "$esp_mount/EFI/zbm/vmlinuz.efi" "$esp_mount/EFI/ZBM/vmlinuz.efi" "$esp_mount/vmlinuz.efi"; do
-        if [ -f "$zbm_path" ]; then
-            zbm_efi_path="$zbm_path"
-            success "ZFSBootMenu EFI image found: $zbm_efi_path"
-            echo "ZBM_EFI_PATH=\"$zbm_efi_path\"" >> "$CONFIG_FILE"
-            break
-        fi
-    done
-    
-    if [ -z "$zbm_efi_path" ]; then
-        warning "ZFSBootMenu EFI image not found in expected locations"
+    # Check for ZBM files - CORRECTED PATHS
+    if [ -f "$esp_mount/EFI/ZBM/vmlinuz.efi" ]; then
+        local zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz.efi"
+        echo "ZBM_EFI_PATH=\"$zbm_efi_path\"" >> "$CONFIG_FILE"
+        ZBM_EFI_PATH="$zbm_efi_path"
+        success "ZFSBootMenu EFI image found"
+    elif [ -f "$esp_mount/EFI/ZBM/vmlinuz-backup.efi" ]; then
+        local zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz-backup.efi"
+        echo "ZBM_EFI_PATH=\"$zbm_efi_path\"" >> "$CONFIG_FILE"
+        ZBM_EFI_PATH="$zbm_efi_path"
+        info "Only backup ZFSBootMenu EFI image found"
     fi
     
-    # Save ESP information
+    # Set global variable for other functions
+    ESP_MOUNT="$esp_mount"
+    
     {
         echo "ESP_MOUNT=\"$esp_mount\""
         echo "ESP_USAGE=$esp_usage"
         echo "ESP_FREE_MB=$esp_free_mb"
     } >> "$CONFIG_FILE"
     
-    export ESP_MOUNT="$esp_mount"
-    
     success "ESP check completed (${esp_usage}% used, ${esp_free_mb}MB free)"
 }
 
 check_system_resources() {
-    local available_mem_kb available_mem_mb total_mem_kb load_avg
-    
     info "Checking system resources..."
     
+    local available_mem_kb available_mem_mb load_avg load_check
+    
     # Check available memory (ZFS needs sufficient RAM)
-    available_mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
+    available_mem_kb=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
     available_mem_mb=$((available_mem_kb / 1024))
-    
-    total_mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo "0")
-    
-    log "Available memory: ${available_mem_mb}MB"
     
     if [ "$available_mem_mb" -lt 512 ]; then
         warning "Less than 512MB RAM available. ZFS updates may be slow."
     fi
     
     # Check system load
-    load_avg=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0.0")
+    load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk -F',' '{print $1}' | tr -d ' ')
+    load_check=$(echo "$load_avg > 2" | bc 2>/dev/null || echo "0")
     
-    # Use awk for floating point comparison instead of bc
-    if awk "BEGIN {exit !($load_avg > 2.0)}"; then
+    if [ "$load_check" = "1" ]; then
         warning "High system load detected: $load_avg"
-        warning "Consider waiting for load to decrease before updating"
+        warning "Consider waiting for load to decrease"
     fi
-    
-    log "System load average: $load_avg"
     
     success "System resources check completed"
 }
 
 check_disk_space() {
-    local root_usage root_free_mb boot_usage boot_free_mb backup_free_mb
-    
     info "Checking disk space..."
     
-    # Check root filesystem space
+    local root_usage root_free_mb boot_usage boot_free_mb backup_free_mb
+    
     root_usage=$(df / | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
     root_free_mb=$(df -m / | awk 'NR==2 {print $4}' || echo "0")
     
@@ -641,50 +564,38 @@ check_disk_space() {
         error_exit "Root filesystem is ${root_usage}% full. Need space for updates."
     fi
     
-    log "Root filesystem: ${root_usage}% used, ${root_free_mb}MB free"
-    
-    # Check /boot if it's a separate mount point
     if mountpoint -q /boot 2>/dev/null; then
         boot_usage=$(df /boot | awk 'NR==2 {print $5}' | sed 's/%//' || echo "0")
         boot_free_mb=$(df -m /boot | awk 'NR==2 {print $4}' || echo "0")
-        
-        log "Boot filesystem: ${boot_usage}% used, ${boot_free_mb}MB free"
         
         if [ "$boot_usage" -gt 80 ]; then
             warning "Boot partition is ${boot_usage}% full"
         fi
         
         if [ "$boot_free_mb" -lt 100 ]; then
-            error_exit "Boot partition needs at least 100MB free space"
+            error_exit "Boot partition needs at least 100MB free"
         fi
     fi
     
-    # Check space for backups
     backup_free_mb=$(df -m "$(dirname "$BACKUP_DIR")" | awk 'NR==2 {print $4}' || echo "0")
     if [ "$backup_free_mb" -lt 1024 ]; then
-        warning "Less than 1GB available for backups in $(dirname "$BACKUP_DIR")"
+        warning "Less than 1GB available for backups"
     fi
     
     success "Sufficient disk space available"
 }
 
 check_running_processes() {
-    local process_warnings
+    info "Checking for interfering processes..."
     
-    info "Checking for potentially interfering processes..."
-    
-    process_warnings=0
-    
-    # Check for database processes that might be using ZFS datasets
+    # Check for database processes
     if pgrep -f "(mysqld|postgresql|mongodb|mariadb)" >/dev/null 2>&1; then
         warning "Database processes detected - consider stopping before update"
-        process_warnings=$((process_warnings + 1))
     fi
     
     # Check for backup processes
-    if pgrep -f "(rsync|borgbackup|duplicity|tar)" >/dev/null 2>&1; then
+    if pgrep -f "(rsync|borgbackup|duplicity)" >/dev/null 2>&1; then
         warning "Backup processes detected - consider waiting for completion"
-        process_warnings=$((process_warnings + 1))
     fi
     
     # Check for package manager processes
@@ -692,84 +603,67 @@ check_running_processes() {
         error_exit "Another xbps-install process is running. Wait for completion."
     fi
     
-    # Check for ZFS maintenance processes
-    if pgrep -f "(zfs send|zfs receive|zpool scrub)" >/dev/null 2>&1; then
-        warning "ZFS maintenance processes detected"
-        process_warnings=$((process_warnings + 1))
-    fi
-    
-    if [ "$process_warnings" -eq 0 ]; then
-        success "No interfering processes detected"
-    else
-        success "Process check completed with $process_warnings warnings"
-    fi
+    success "Process check completed"
 }
 
 create_backups() {
     info "Creating backup directory and configurations..."
     
-    # Create backup directory with proper permissions
-    if ! mkdir -p "$BACKUP_DIR"; then
-        error_exit "Failed to create backup directory: $BACKUP_DIR"
-    fi
+    mkdir -p "$BACKUP_DIR"
     
-    # Backup ZFS configurations if pools exist
     if [ "${POOLS_EXIST:-false}" = "true" ]; then
         info "Backing up ZFS configurations..."
-        
-        # Create ZFS configuration backups with error handling
         {
-            zfs list -H -o name,mountpoint > "$BACKUP_DIR/zfs-datasets.txt" || true
-            zpool list -H > "$BACKUP_DIR/zpool-list.txt" || true
-            zfs get all > "$BACKUP_DIR/zfs-properties.txt" || true
-            zpool get all > "$BACKUP_DIR/zpool-properties.txt" || true
+            zfs list -H -o name,mountpoint > "$BACKUP_DIR/zfs-datasets.txt"
+            zpool list -H > "$BACKUP_DIR/zpool-list.txt"
+            zfs get all > "$BACKUP_DIR/zfs-properties.txt"
+            zpool get all > "$BACKUP_DIR/zpool-properties.txt"
             zfs list -t snapshot > "$BACKUP_DIR/zfs-snapshots.txt" 2>/dev/null || true
-            # Export ZFS pool configurations
-            zdb -e > "$BACKUP_DIR/zfs-pool-configs.txt" 2>/dev/null || true
-        }
+        } 2>/dev/null || warning "Some ZFS backup commands failed"
     fi
     
-    # Backup system configuration files
-    [ -f /etc/fstab ] && cp /etc/fstab "$BACKUP_DIR/" 2>/dev/null || true
-    [ -f /etc/dracut.conf ] && cp /etc/dracut.conf "$BACKUP_DIR/" 2>/dev/null || true
-    [ -d /etc/dracut.conf.d ] && cp -r /etc/dracut.conf.d "$BACKUP_DIR/dracut.conf.d-backup/" 2>/dev/null || true
-    [ -d /boot/grub ] && cp -r /boot/grub "$BACKUP_DIR/grub-backup/" 2>/dev/null || true
+    # Backup system configs
+    cp /etc/fstab "$BACKUP_DIR/" 2>/dev/null || true
     
-    # Backup modprobe configurations
+    if [ -d /boot/grub ]; then
+        cp -r /boot/grub "$BACKUP_DIR/grub-backup/" 2>/dev/null || true
+    fi
+    
+    if [ -f /etc/dracut.conf ]; then
+        cp /etc/dracut.conf "$BACKUP_DIR/" 2>/dev/null || true
+    fi
+    
+    if [ -d /etc/dracut.conf.d ]; then
+        cp -r /etc/dracut.conf.d "$BACKUP_DIR/" 2>/dev/null || true
+    fi
+    
+    # Backup modprobe configs that might affect ZFS
     if [ -d /etc/modprobe.d ]; then
-        mkdir -p "$BACKUP_DIR/modprobe.d-backup"
-        cp /etc/modprobe.d/*.conf "$BACKUP_DIR/modprobe.d-backup/" 2>/dev/null || true
+        cp /etc/modprobe.d/*.conf "$BACKUP_DIR/" 2>/dev/null || true
     fi
     
-    # Backup current kernel modules list
-    lsmod > "$BACKUP_DIR/current-modules.txt" 2>/dev/null || true
-    
-    success "System configuration backup created in $BACKUP_DIR"
+    success "System configuration backup created"
 }
 
 backup_zbm_configuration() {
-    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
+    if [ "${ZBM_DETECTED}" != "true" ]; then
         return 0
     fi
     
     info "Backing up ZFSBootMenu configuration..."
     
-    # Backup ZBM config file
-    if [ -n "${ZBM_CONFIG:-}" ] && [ -f "$ZBM_CONFIG" ]; then
-        cp "$ZBM_CONFIG" "$BACKUP_DIR/zfsbootmenu-config.yaml" || warning "Failed to backup ZBM config"
+    if [ -f "$ZBM_CONFIG" ]; then
+        cp "$ZBM_CONFIG" "$BACKUP_DIR/zfsbootmenu-config.yaml" 2>/dev/null || true
     fi
     
-    # Backup entire ZBM configuration directory
     if [ -d "/etc/zfsbootmenu" ]; then
-        cp -r "/etc/zfsbootmenu" "$BACKUP_DIR/zfsbootmenu-etc-backup/" 2>/dev/null || true
+        cp -r "/etc/zfsbootmenu" "$BACKUP_DIR/zfsbootmenu-etc/" 2>/dev/null || true
     fi
     
-    # Backup ZBM EFI image if found
-    if [ -n "${ZBM_EFI_PATH:-}" ] && [ -f "${ZBM_EFI_PATH}" ]; then
-        cp "${ZBM_EFI_PATH}" "$BACKUP_DIR/vmlinuz.efi.backup" || warning "Failed to backup ZBM EFI image"
+    if [ -n "${ZBM_EFI_PATH}" ] && [ -f "$ZBM_EFI_PATH" ]; then
+        cp "$ZBM_EFI_PATH" "$BACKUP_DIR/vmlinuz.efi.backup" 2>/dev/null || true
     fi
     
-    # Backup EFI boot entries
     if command -v efibootmgr >/dev/null 2>&1; then
         efibootmgr -v > "$BACKUP_DIR/efi-boot-entries.txt" 2>&1 || true
     fi
@@ -778,16 +672,17 @@ backup_zbm_configuration() {
 }
 
 backup_esp_completely() {
-    local esp_backup_dir
-    
-    if [ "${ZBM_DETECTED:-false}" != "true" ]; then
+    if [ "${ZBM_DETECTED}" != "true" ]; then
         return 0
     fi
     
     info "Creating complete ESP backup..."
     
-    if [ -z "${ESP_MOUNT:-}" ] || [ ! -d "${ESP_MOUNT}" ]; then
-        warning "ESP mount point not available for backup"
+    local esp_mount esp_backup_dir
+    esp_mount=${ESP_MOUNT:-/boot/efi}
+    
+    if [ ! -d "$esp_mount" ]; then
+        warning "ESP mount point not found: $esp_mount"
         return 0
     fi
     
@@ -796,104 +691,81 @@ backup_esp_completely() {
     mkdir -p "$esp_backup_dir"
     
     # Backup entire ESP structure
-    if cp -r "${ESP_MOUNT}"/* "$esp_backup_dir/" 2>/dev/null; then
+    if cp -r "$esp_mount"/* "$esp_backup_dir/" 2>/dev/null; then
         success "Complete ESP backup created"
     else
-        warning "ESP backup may be incomplete - some files may be inaccessible"
+        warning "ESP backup may be incomplete"
     fi
     
-    # Create detailed ESP information file
+    # Get partition information
     {
-        echo "=== ESP Backup Information ==="
-        echo "Backup Date: $(date)"
-        echo "ESP Mount Point: ${ESP_MOUNT}"
-        echo ""
         echo "=== ESP Filesystem Info ==="
-        df -h "${ESP_MOUNT}" 2>/dev/null || echo "Unable to get filesystem info"
+        df -h "$esp_mount" 2>/dev/null || true
         echo ""
         echo "=== ESP Mount Info ==="
-        findmnt "${ESP_MOUNT}" 2>/dev/null || echo "Unable to get mount info"
+        findmnt "$esp_mount" 2>/dev/null || true
         echo ""
-        echo "=== ESP Directory Structure ==="
-        find "${ESP_MOUNT}" -type d 2>/dev/null | sort || echo "Unable to list directories"
-        echo ""
-        echo "=== ESP Files ==="
-        find "${ESP_MOUNT}" -type f 2>/dev/null | sort || echo "Unable to list files"
-    } > "$BACKUP_DIR/esp-backup-info.txt"
+        echo "=== ESP Contents ==="
+        find "$esp_mount" -type f 2>/dev/null || true
+    } > "$BACKUP_DIR/esp-info.txt"
     
-    success "ESP backup and information saved"
+    success "ESP information saved to esp-info.txt"
 }
 
 main() {
-    local exit_code=0
+    header "ZFS PRE-UPDATE CHECKS"
     
-    header "ZFS PRE-UPDATE CHECKS FOR VOID LINUX"
     log "Starting ZFS pre-update checks..."
-    log "Script version: $SCRIPT_VERSION"
     
-    # Basic system validation
     check_root
     validate_dependencies
     create_initial_config
     
     # CRITICAL: Check for updates FIRST
     if ! check_available_updates; then
-        header "NO UPDATES AVAILABLE"
-        info "System is up to date. No further checks needed."
+        # No updates available - clean exit
         exit 0
     fi
     
-    # Updates available - continue with full system checks
-    header "UPDATES FOUND - PERFORMING COMPREHENSIVE SYSTEM CHECKS"
+    # Updates available - continue with full checks
+    header "UPDATES FOUND - PERFORMING SYSTEM CHECKS"
     
-    # System resource and compatibility checks
     check_system_resources
     check_zfs_loaded
-    check_dracut_available
+    check_dracut_available 
     check_zfs_specific_updates
-    
-    # Boot system detection and checks
     detect_zfsbootmenu
     check_void_services
     check_system_versions
-    
-    # ZFS pool and storage checks
     check_pool_health
     check_zbm_boot_pool
     check_zbm_esp
     check_disk_space
-    
-    # Process and safety checks
     check_running_processes
-    
-    # Create comprehensive backups
     create_backups
     backup_zbm_configuration
     backup_esp_completely
     
     header "PRE-CHECKS COMPLETED SUCCESSFULLY"
     
-    # Final summary
     success "All pre-update checks passed!"
-    log "System type: $([ "${ZBM_DETECTED:-false}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional bootloader")"
-    log "Updates found: ${TOTAL_UPDATES:-0} packages (ZFS: ${ZFS_COUNT:-0}, ZBM: ${ZBM_COUNT:-0}, Dracut: ${DRACUT_COUNT:-0}, Kernel: ${KERNEL_COUNT:-0}, Firmware: ${FIRMWARE_COUNT:-0})"
+    log "System type: $([ "${ZBM_DETECTED}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional")"
+    log "Updates found: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, ZBM: ${ZBM_COUNT}, Dracut: ${DRACUT_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT})"
     log "Backup directory: $BACKUP_DIR"
-    log "Configuration file: $CONFIG_FILE"
-    log "Log file: $LOG_FILE"
+    log "Configuration saved to: $CONFIG_FILE"
+    log "Ready to proceed with updates"
     
     echo ""
     echo "=========================================="
     echo -e "${GREEN}✓ PRE-CHECKS COMPLETED SUCCESSFULLY${NC}"
     echo "=========================================="
-    echo "System type: $([ "${ZBM_DETECTED:-false}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional")"
-    echo "Updates: ${TOTAL_UPDATES:-0} packages (ZFS: ${ZFS_COUNT:-0}, ZBM: ${ZBM_COUNT:-0}, Dracut: ${DRACUT_COUNT:-0}, Kernel: ${KERNEL_COUNT:-0}, Firmware: ${FIRMWARE_COUNT:-0})"
+    echo "System type: $([ "${ZBM_DETECTED}" = "true" ] && echo "ZFSBootMenu" || echo "Traditional")"
+    echo "Updates: ${TOTAL_UPDATES} packages (ZFS: ${ZFS_COUNT}, ZBM: ${ZBM_COUNT}, Dracut: ${DRACUT_COUNT}, Kernel: ${KERNEL_COUNT}, Firmware: ${FIRMWARE_COUNT})"
     echo "Backup: $BACKUP_DIR"
     echo "Log: $LOG_FILE"
     echo ""
-    echo "✓ System is ready for ZFS updates"
-    echo "Next step: Run your ZFS update script"
+    echo "Next step: Run zfs-install-updates.sh"
     echo "=========================================="
 }
 
-# Execute main function with all arguments
 main "$@"
