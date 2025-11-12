@@ -179,6 +179,12 @@ create_system_dataset () {
     print "Generate hostid"
     zgenhostid
 
+    # ADD: Validate hostid per ZFS documentation
+    if [[ ! -f /etc/hostid ]]; then
+        echo "ERROR: Failed to generate hostid!" >&2
+        exit 1
+    fi 
+	 
     # Set bootfs
     print "Set ZFS bootfs"
     zpool set bootfs="zroot/ROOT/$1" zroot
@@ -204,6 +210,7 @@ create_home_dataset () {
 create_swapspace() {
     ask "Do you want to create a swap space? (y/n)"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        SWAP_CREATED=true
         print "Creating swap zvol"
         read -p "Enter swap size (e.g., 4G, 8G): " swap_size
         zfs create -V "${swap_size:-4G}" -b $(getconf PAGESIZE) \
@@ -217,6 +224,10 @@ create_swapspace() {
 
         print "Formatting swap"
         mkswap -f /dev/zvol/zroot/swap
+        echo "$SWAP_CREATED" > /tmp/swap_created
+    else
+        SWAP_CREATED=false
+        echo "$SWAP_CREATED" > /tmp/swap_created
     fi
 }
 
@@ -242,8 +253,8 @@ mount_system () {
     # Mount EFI part
     print "Mount EFI part"
     EFI="$DISK-part1"
-    mkdir -p /mnt/efi
-    mount "$EFI" /mnt/efi
+    mkdir -p /mnt/boot/efi
+    mount "$EFI" /mnt/boot/efi
 }
 
 copy_zpool_cache () {
@@ -251,6 +262,10 @@ copy_zpool_cache () {
     print "Generate and copy zfs cache"
     mkdir -p /mnt/etc/zfs
     zpool set cachefile=/etc/zfs/zpool.cache zroot
+	cp /etc/zfs/zpool.cache /mnt/etc/zfs/
+	
+	# ADD: Create zpool.cache.d directory per OpenZFS guide
+    mkdir -p /mnt/etc/zfs/zpool.cache.d
 }
 
 # Main
@@ -396,7 +411,6 @@ EOF
 
 # Prepare locales and keymap
 print 'Prepare locales and keymap'
-echo 'KEYMAP=en' > /mnt/etc/vconsole.conf
 echo 'en_US.UTF-8 UTF-8' > /mnt/etc/default/libc-locales
 echo 'LANG="en_US.UTF-8"' > /mnt/etc/locale.conf
 
@@ -407,14 +421,13 @@ timezone=${timezone:-"Asia/Singapore"}
 
 # Configure system
 cat >> /mnt/etc/rc.conf << EOF
-KEYMAP="en"
 TIMEZONE="$timezone"
 HARDWARECLOCK="UTC"
 EOF
 
 # Configure dracut
 print 'Configure dracut'
-cat > /mnt/etc/dracut.conf.d/zol.conf <<"EOF"
+cat > /mnt/etc/dracut.conf.d/zfs.conf <<"EOF"
 hostonly="yes"
 nofsck="yes"
 add_dracutmodules+=" zfs "
@@ -452,27 +465,32 @@ chroot /mnt/ /bin/bash -e <<EOF
   zfs create zroot/data/home/${user}
   useradd -m -d /home/${user} -G network,wheel,socklog,video,audio,_seatd,input ${user}
   chown -R ${user}:${user} /home/${user}
-
-  # Configure fstab
-  grep efi /proc/mounts > /etc/fstab
   
   # Enable swap in chroot.
-  swapon /dev/zvol/zroot/swap
+  if [[ -f /tmp/swap_created ]] && [[ "\$(cat /tmp/swap_created)" == "true" ]]; then
+    swapon /dev/zvol/zroot/swap
+  fi
 EOF
 
 # Configure fstab
 print 'Configure fstab'
-cat >> /mnt/etc/fstab <<"EOF"
+EFI_UUID=$(blkid -s UUID -o value "$EFI")
+cat > /mnt/etc/fstab <<EOF
+UUID=$EFI_UUID /boot/efi vfat defaults 0 2
 tmpfs     /dev/shm                  tmpfs     rw,nosuid,nodev,noexec,inode64  0 0
 tmpfs     /tmp                      tmpfs     defaults,nosuid,nodev           0 0
 efivarfs  /sys/firmware/efi/efivars efivarfs  defaults                        0 0
-swap 	/dev/zvol/zroot/swap 	none 	swap 	defaults 					  0 0
 EOF
+
+# Add swap entry only if created
+if [[ -f /tmp/swap_created ]] && [[ "$(cat /tmp/swap_created)" == "true" ]]; then
+    echo "/dev/zvol/zroot/swap none swap defaults 0 0" >> /mnt/etc/fstab
+fi
 
 # Set root passwd
 print 'Set root password'
 chroot /mnt /bin/passwd
-
+ 
 # Set user passwd
 print 'Set user password'
 chroot /mnt /bin/passwd "$user"
@@ -488,19 +506,19 @@ EOF
 ### Configure zfsbootmenu
 
 # Create dirs
-mkdir -p /mnt/efi/EFI/ZBM /etc/zfsbootmenu/dracut.conf.d
+mkdir -p /mnt/boot/efi/EFI/ZBM /mnt/etc/zfsbootmenu/dracut.conf.d
 
 # Generate zfsbootmenu efi
 print 'Configure zfsbootmenu'
 cat > /mnt/etc/zfsbootmenu/config.yaml <<EOF
 Global:
   ManageImages: true
-  BootMountPoint: /efi
+  BootMountPoint: /boot/efi
   DracutConfDir: /etc/zfsbootmenu/dracut.conf.d
 Components:
   Enabled: false
 EFI:
-  ImageDir: /efi/EFI/ZBM
+  ImageDir: /boot/efi/EFI/ZBM
   Versions: false
   Enabled: true
 Kernel:
@@ -552,30 +570,48 @@ modprobe efivarfs
 mountpoint -q /sys/firmware/efi/efivars \
     || mount -t efivarfs efivarfs /sys/firmware/efi/efivars
 
-if efibootmgr | grep ZFSBootMenu
-then
-  for entry in $(efibootmgr | grep ZFSBootMenu | sed -E 's/Boot([0-9]+).*/\1/')
-  do
-    efibootmgr -B -b "$entry"
-  done
+# Validate EFI files exist before creating entries
+if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
+    echo "ERROR: ZFSBootMenu EFI file not found!" >&2
+    exit 1
 fi
 
-efibootmgr --disk "$DISK" \
+if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi ]]; then
+    echo "WARNING: ZFSBootMenu backup EFI file not found!"
+    echo "Creating backup copy..."
+    cp /mnt/boot/efi/EFI/ZBM/vmlinuz.efi /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi
+fi
+
+# Remove existing ZFSBootMenu entries
+if efibootmgr | grep ZFSBootMenu; then
+    for entry in $(efibootmgr | grep ZFSBootMenu | sed -E 's/Boot([0-9]+).*/\1/'); do   
+        efibootmgr -B -b "$entry"
+    done
+fi
+
+# Create new entries with error checking
+if ! efibootmgr --disk "$DISK" \
   --part 1 \
   --create \
   --label "ZFSBootMenu Backup" \
   --loader "\EFI\ZBM\vmlinuz-backup.efi" \
-  --verbose
-efibootmgr --disk "$DISK" \
+  --verbose; then
+    echo "ERROR: Failed to create backup boot entry!" >&2
+fi
+
+if ! efibootmgr --disk "$DISK" \
   --part 1 \
   --create \
   --label "ZFSBootMenu" \
   --loader "\EFI\ZBM\vmlinuz.efi" \
-  --verbose
+  --verbose; then
+    echo "ERROR: Failed to create main boot entry!" >&2
+    exit 1
+fi
 
 # Umount all parts
 print 'Umount all parts'
-umount /mnt/efi
+umount /mnt/boot/efi
 umount -l /mnt/{dev,proc,sys}
 zfs umount -a
 
@@ -586,4 +622,4 @@ zpool export zroot
 # Finish
 echo -e '\e[32mAll OK\033[0m'
 print "Installation complete. You may reboot with:"
-echo -e "\n  umount -R /mnt && reboot\n"
+echo -e "\n  umount -R /mnt && reboot\n"     
