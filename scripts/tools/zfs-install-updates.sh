@@ -9,6 +9,16 @@ set -euo pipefail
 CONFIG_FILE="/etc/zfs-update.conf"
 LOG_FILE="/var/log/zfs-install-updates-$(date +%Y%m%d-%H%M%S).log"
 
+# Global variables for package tracking
+ZFS_PACKAGES=""
+DRACUT_PACKAGES=""
+KERNEL_PACKAGES=""
+FIRMWARE_PACKAGES=""
+ALL_PACKAGES=""
+KERNEL_UPDATED=false
+ZFS_UPDATED=false
+DRACUT_UPDATED=false
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -82,15 +92,14 @@ load_config() {
     POOLS_EXIST=${POOLS_EXIST:-false}
     TOTAL_UPDATES=${TOTAL_UPDATES:-0}
     ZFS_COUNT=${ZFS_COUNT:-0}
+    ZBM_COUNT=${ZBM_COUNT:-0}
     DRACUT_COUNT=${DRACUT_COUNT:-0}
     KERNEL_COUNT=${KERNEL_COUNT:-0}
     FIRMWARE_COUNT=${FIRMWARE_COUNT:-0}
-    DKMS_COUNT=${DKMS_COUNT:-0}
-    DKMS_AVAILABLE=${DKMS_AVAILABLE:-false}
     
     info "Configuration loaded successfully"
     log "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
-    log "Updates to install: $TOTAL_UPDATES packages (ZFS: $ZFS_COUNT, Dracut: $DRACUT_COUNT, Kernel: $KERNEL_COUNT, Firmware: $FIRMWARE_COUNT, DKMS: $DKMS_COUNT)"
+    log "Updates to install: $TOTAL_UPDATES packages (ZFS: $ZFS_COUNT, ZBM: $ZBM_COUNT, Dracut: $DRACUT_COUNT, Kernel: $KERNEL_COUNT, Firmware: $FIRMWARE_COUNT)"
     log "Backup directory: $BACKUP_DIR"
 }
 
@@ -123,37 +132,54 @@ check_prerequisites() {
 get_packages_to_install() {
     info "Getting current package lists for installation..."
     
-    # Get list of ZFS packages to update (improved pattern matching)
-    ZFS_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^(zfs|zfsbootmenu)-" | awk '{print $1}' | tr '\n' ' ' || true)
+    local zfs_packages dracut_packages kernel_packages firmware_packages all_packages
+    
+    # Get list of ZFS packages to update - match patterns from Script 1
+    zfs_packages=$(xbps-install -un 2>/dev/null | grep -E "^zfs-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
+    
+    # Check for ZFSBootMenu packages - try multiple patterns like Script 1
+    local zbm_packages
+    zbm_packages=$(xbps-install -un 2>/dev/null | grep -E "^zfsbootmenu-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
+    if [ -z "$zbm_packages" ]; then
+        # Try without hyphen in case package name is just 'zfsbootmenu'
+        zbm_packages=$(xbps-install -un 2>/dev/null | grep -E "^zfsbootmenu[[:space:]]" | awk '{print $1}' | tr '\n' ' ' || true)
+    fi
+    
+    # Combine ZFS and ZBM packages
+    zfs_packages="$zfs_packages $zbm_packages"
+    zfs_packages=$(echo "$zfs_packages" | xargs) # trim whitespace
     
     # Get list of dracut packages to update
-    DRACUT_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^dracut-" | awk '{print $1}' | tr '\n' ' ' || true)
+    dracut_packages=$(xbps-install -un 2>/dev/null | grep -E "^dracut-" | awk '{print $1}' | tr '\n' ' ' || true)
     
-    # Get list of kernel packages to update (improved pattern)
-    KERNEL_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^linux[0-9]+-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
+    # Get list of kernel packages to update (match Script 1 pattern)
+    kernel_packages=$(xbps-install -un 2>/dev/null | grep -E "^linux[0-9]+\.[0-9]+-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
     
     # Get firmware packages
-    FIRMWARE_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^linux-firmware" | awk '{print $1}' | tr '\n' ' ' || true)
+    firmware_packages=$(xbps-install -un 2>/dev/null | grep -E "^linux-firmware-[0-9]" | awk '{print $1}' | tr '\n' ' ' || true)
     
-    # Get DKMS packages
-    DKMS_PACKAGES=$(xbps-install -un 2>/dev/null | grep -E "^dkms" | awk '{print $1}' | tr '\n' ' ' || true)
-    
-    ALL_PACKAGES="$ZFS_PACKAGES $DRACUT_PACKAGES $KERNEL_PACKAGES $FIRMWARE_PACKAGES $DKMS_PACKAGES"
+    all_packages="$zfs_packages $dracut_packages $kernel_packages $firmware_packages"
     
     # Trim whitespace
-    ALL_PACKAGES=$(echo "$ALL_PACKAGES" | xargs)
+    all_packages=$(echo "$all_packages" | xargs)
     
-    if [ -z "$ALL_PACKAGES" ]; then
+    if [ -z "$all_packages" ]; then
         warning "No packages found for installation (packages may have been updated since pre-checks)"
         return 1
     fi
     
+    # Export for global use
+    ZFS_PACKAGES="$zfs_packages"
+    DRACUT_PACKAGES="$dracut_packages"
+    KERNEL_PACKAGES="$kernel_packages"
+    FIRMWARE_PACKAGES="$firmware_packages"
+    ALL_PACKAGES="$all_packages"
+    
     info "Packages to install:"
-    [ -n "$ZFS_PACKAGES" ] && log "  ZFS: $ZFS_PACKAGES"
-    [ -n "$DRACUT_PACKAGES" ] && log "  Dracut: $DRACUT_PACKAGES"
-    [ -n "$KERNEL_PACKAGES" ] && log "  Kernel: $KERNEL_PACKAGES"
-    [ -n "$FIRMWARE_PACKAGES" ] && log "  Firmware: $FIRMWARE_PACKAGES"
-    [ -n "$DKMS_PACKAGES" ] && log "  DKMS: $DKMS_PACKAGES"
+    [ -n "$zfs_packages" ] && log "  ZFS/ZBM: $zfs_packages"
+    [ -n "$dracut_packages" ] && log "  Dracut: $dracut_packages"
+    [ -n "$kernel_packages" ] && log "  Kernel: $kernel_packages"
+    [ -n "$firmware_packages" ] && log "  Firmware: $firmware_packages"
     
     return 0
 }
@@ -166,35 +192,37 @@ create_installation_snapshot() {
     
     info "Creating pre-installation snapshot for rollback protection..."
     
-    INSTALL_SNAPSHOT_NAME="pre-install-$(date +%Y%m%d-%H%M%S)"
-    INSTALL_SNAPSHOT_COUNT=0
-    INSTALL_FAILED_COUNT=0
+    local install_snapshot_name install_snapshot_count install_failed_count dataset
+    
+    install_snapshot_name="pre-install-$(date +%Y%m%d-%H%M%S)"
+    install_snapshot_count=0
+    install_failed_count=0
     
     # Create snapshots for all datasets before any changes
     for dataset in $(zfs list -H -o name -t filesystem,volume 2>/dev/null || true); do
-        if zfs snapshot "${dataset}@${INSTALL_SNAPSHOT_NAME}" 2>/dev/null; then
-            ((INSTALL_SNAPSHOT_COUNT++))
-            log "Created installation snapshot: ${dataset}@${INSTALL_SNAPSHOT_NAME}"
+        if zfs snapshot "${dataset}@${install_snapshot_name}" 2>/dev/null; then
+            ((install_snapshot_count++))
+            log "Created installation snapshot: ${dataset}@${install_snapshot_name}"
         else
-            ((INSTALL_FAILED_COUNT++))
+            ((install_failed_count++))
             warning "Failed to create installation snapshot for $dataset"
         fi
     done
     
-    if [ $INSTALL_SNAPSHOT_COUNT -gt 0 ]; then
-        success "Created $INSTALL_SNAPSHOT_COUNT installation snapshots"
+    if [ $install_snapshot_count -gt 0 ]; then
+        success "Created $install_snapshot_count installation snapshots"
         
         # Save this snapshot name for rollback script
-        echo "INSTALL_SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
-        echo "SNAPSHOT_NAME=\"$INSTALL_SNAPSHOT_NAME\"" >> "$CONFIG_FILE"
+        echo "INSTALL_SNAPSHOT_NAME=\"$install_snapshot_name\"" >> "$CONFIG_FILE"
+        echo "SNAPSHOT_NAME=\"$install_snapshot_name\"" >> "$CONFIG_FILE"
         
         info "Installation snapshot name saved for potential rollback"
     else
         warning "No installation snapshots created"
     fi
     
-    if [ $INSTALL_FAILED_COUNT -gt 0 ]; then
-        warning "$INSTALL_FAILED_COUNT installation snapshots failed to create"
+    if [ $install_failed_count -gt 0 ]; then
+        warning "$install_failed_count installation snapshots failed to create"
     fi
 }
 
@@ -221,16 +249,18 @@ export_single_pool() {
 
 show_pool_usage() {
     local pool=$1
+    local pool_datasets dataset mountpoint
+    
     info "Checking what's using pool $pool..."
     
     # Get all datasets in the pool
-    POOL_DATASETS=$(zfs list -H -o name -r "$pool" 2>/dev/null || echo "$pool")
+    pool_datasets=$(zfs list -H -o name -r "$pool" 2>/dev/null || echo "$pool")
     
-    for dataset in $POOL_DATASETS; do
-        MOUNTPOINT=$(zfs get -H -o value mountpoint "$dataset" 2>/dev/null || echo "none")
-        if [ "$MOUNTPOINT" != "none" ] && [ -d "$MOUNTPOINT" ]; then
+    for dataset in $pool_datasets; do
+        mountpoint=$(zfs get -H -o value mountpoint "$dataset" 2>/dev/null || echo "none")
+        if [ "$mountpoint" != "none" ] && [ -d "$mountpoint" ]; then
             if command -v lsof >/dev/null 2>&1; then
-                lsof +D "$MOUNTPOINT" 2>/dev/null | head -10 | tee -a "$LOG_FILE" || true
+                lsof +D "$mountpoint" 2>/dev/null | head -10 | tee -a "$LOG_FILE" || true
             fi
         fi
     done
@@ -245,31 +275,32 @@ export_zfs_pools() {
     
     info "Exporting ZFS pools for safe update..."
     
-    ALL_POOLS=$(zpool list -H -o name 2>/dev/null || echo "")
+    local all_pools boot_pools root_pools pool
+    all_pools=$(zpool list -H -o name 2>/dev/null || echo "")
     
-    if [ -z "$ALL_POOLS" ]; then
+    if [ -z "$all_pools" ]; then
         info "No ZFS pools found to export"
         return 0
     fi
     
-    # For ZBM systems, handle boot pools specially
+    # For ZBM systems, handle boot pools specially - match Script 1 logic
     if [ "$ZFSBOOTMENU" = true ]; then
-        BOOT_POOLS=${BOOT_POOLS:-}
-        ROOT_POOLS=""
+        boot_pools=${BOOT_POOLS:-}
+        root_pools=""
         
         # Separate boot and root pools
-        for pool in $ALL_POOLS; do
-            if [[ " $BOOT_POOLS " == *" $pool "* ]]; then
+        for pool in $all_pools; do
+            if [[ " $boot_pools " == *" $pool "* ]]; then
                 continue  # Skip boot pools for now
             else
-                ROOT_POOLS="$ROOT_POOLS $pool"
+                root_pools="$root_pools $pool"
             fi
         done
         
         # Export root pools first
-        if [ -n "$(echo $ROOT_POOLS | xargs)" ]; then
-            info "Exporting root pools first: $ROOT_POOLS"
-            for pool in $ROOT_POOLS; do
+        if [ -n "$(echo $root_pools | xargs)" ]; then
+            info "Exporting root pools first: $root_pools"
+            for pool in $root_pools; do
                 if [ -n "$pool" ]; then
                     export_single_pool "$pool" "root"
                 fi
@@ -277,44 +308,35 @@ export_zfs_pools() {
         fi
         
         # Export boot pools last (more critical)
-        if [ -n "$BOOT_POOLS" ]; then
-            info "Exporting boot pools: $BOOT_POOLS"
-            for pool in $BOOT_POOLS; do
+        if [ -n "$boot_pools" ]; then
+            info "Exporting boot pools: $boot_pools"
+            for pool in $boot_pools; do
                 export_single_pool "$pool" "boot"
             done
         fi
     else
         # Traditional system - export all pools
-        for pool in $ALL_POOLS; do
+        for pool in $all_pools; do
             export_single_pool "$pool" "regular"
         done
     fi
     
     # Save exported pools list
-    echo "$ALL_POOLS" > "$BACKUP_DIR/exported-pools.txt"
+    echo "$all_pools" > "$BACKUP_DIR/exported-pools.txt"
     success "All pools exported successfully"
 }
 
 install_updates() {
     info "Installing ZFS and related updates..."
     
-    # Update ZFS packages first
+    # Update ZFS packages first (includes ZFSBootMenu if present)
     if [ -n "${ZFS_PACKAGES:-}" ]; then
         info "Installing ZFS packages: $ZFS_PACKAGES"
         if xbps-install -y $ZFS_PACKAGES; then
             success "ZFS packages updated successfully"
+            ZFS_UPDATED=true
         else
             error_exit "Failed to update ZFS packages"
-        fi
-    fi
-    
-    # Update DKMS packages if available
-    if [ -n "${DKMS_PACKAGES:-}" ]; then
-        info "Installing DKMS packages: $DKMS_PACKAGES"
-        if xbps-install -y $DKMS_PACKAGES; then
-            success "DKMS packages updated successfully"
-        else
-            warning "DKMS update failed - continuing anyway"
         fi
     fi
     
@@ -323,13 +345,13 @@ install_updates() {
         info "Installing dracut packages: $DRACUT_PACKAGES"
         if xbps-install -y $DRACUT_PACKAGES; then
             success "Dracut packages updated successfully"
+            DRACUT_UPDATED=true
         else
             error_exit "Failed to update dracut packages"
         fi
     fi
     
     # Update kernel packages
-    KERNEL_UPDATED=false
     if [ -n "${KERNEL_PACKAGES:-}" ]; then
         info "Installing kernel packages: $KERNEL_PACKAGES"
         if xbps-install -y $KERNEL_PACKAGES; then
@@ -352,85 +374,64 @@ install_updates() {
     
     # Save update status
     echo "KERNEL_UPDATED=$KERNEL_UPDATED" >> "$CONFIG_FILE"
-    echo "DRACUT_UPDATED=$([ -n "${DRACUT_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
-    echo "ZFS_UPDATED=$([ -n "${ZFS_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
-    echo "DKMS_UPDATED=$([ -n "${DKMS_PACKAGES:-}" ] && echo "true" || echo "false")" >> "$CONFIG_FILE"
+    echo "DRACUT_UPDATED=$DRACUT_UPDATED" >> "$CONFIG_FILE"
+    echo "ZFS_UPDATED=$ZFS_UPDATED" >> "$CONFIG_FILE"
     
     success "Package installation completed"
 }
 
-rebuild_dkms_modules() {
-    if [ "${DKMS_AVAILABLE:-false}" != "true" ]; then
-        info "DKMS not available - skipping DKMS rebuild"
-        return 0
-    fi
-    
-    if [ "${KERNEL_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ] || [ "${DKMS_UPDATED:-false}" = "true" ]; then
-        info "Rebuilding DKMS modules for ZFS..."
-        
-        LATEST_KERNEL=$(ls /lib/modules 2>/dev/null | sort -V | tail -1)
-        
-        if [ -n "$LATEST_KERNEL" ]; then
-            info "Building DKMS modules for kernel: $LATEST_KERNEL"
-            
-            # Remove old ZFS DKMS modules
-            dkms remove zfs --all 2>/dev/null || true
-            
-            # Add and build ZFS modules for the new kernel
-            if dkms add zfs && dkms build zfs && dkms install zfs; then
-                success "DKMS ZFS modules rebuilt successfully"
-            else
-                error_exit "Failed to rebuild DKMS ZFS modules"
-            fi
-        else
-            warning "Cannot determine latest kernel for DKMS rebuild"
-        fi
-    else
-        info "No updates requiring DKMS rebuild"
-    fi
-}
-
 rebuild_initramfs() {
     # Rebuild if kernel was updated OR if ZFS/dracut was updated
-    if [ "${KERNEL_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ] || [ "${DRACUT_UPDATED:-false}" = "true" ]; then
+    if [ "$KERNEL_UPDATED" = "true" ] || [ "$ZFS_UPDATED" = "true" ] || [ "$DRACUT_UPDATED" = "true" ]; then
         
-        if [ "${KERNEL_UPDATED:-false}" = "true" ]; then
+        local latest_kernel kernel_package
+        
+        if [ "$KERNEL_UPDATED" = "true" ]; then
             info "Rebuilding initramfs for updated kernel..."
-        elif [ "${ZFS_UPDATED:-false}" = "true" ]; then
+        elif [ "$ZFS_UPDATED" = "true" ]; then
             info "Rebuilding initramfs for updated ZFS modules..."
         else
             info "Rebuilding initramfs for updated dracut..."
         fi
         
-        LATEST_KERNEL=$(ls /lib/modules 2>/dev/null | sort -V | tail -1)
+        latest_kernel=$(ls /lib/modules 2>/dev/null | sort -V | tail -1)
         
-        if [ -z "$LATEST_KERNEL" ]; then
+        if [ -z "$latest_kernel" ]; then
             error_exit "Cannot find kernel modules directory"
         fi
         
-        info "Rebuilding initramfs for kernel: $LATEST_KERNEL"
+        info "Rebuilding initramfs for kernel: $latest_kernel"
         
-        # Enhanced dracut for ZBM systems
+        # Use xbps-reconfigure to respect /etc/dracut.conf.d/zfs.conf from installation script
         if [ "$ZFSBOOTMENU" = true ]; then
-            info "Building initramfs with ZFSBootMenu optimizations..."
+            info "Building initramfs with ZFSBootMenu optimizations using xbps-reconfigure..."
             
-            # ZBM-specific dracut options
-            DRACUT_ARGS="-f --kver $LATEST_KERNEL"
-            DRACUT_ARGS="$DRACUT_ARGS --add zfs"
+            # Extract kernel package name for reconfigure - matches installation script pattern
+            kernel_package=$(echo "$latest_kernel" | sed 's/-.*$//')
+            kernel_package="linux${kernel_package}"
             
-            # Only add systemd omit if not already configured otherwise
-            if ! grep -q "omit_dracutmodules" /etc/dracut.conf* 2>/dev/null; then
-                DRACUT_ARGS="$DRACUT_ARGS --omit systemd"
-            fi
-            
-            if dracut $DRACUT_ARGS; then
-                success "Initramfs rebuilt for ZFSBootMenu"
+            if xbps-reconfigure -f "$kernel_package" 2>/dev/null; then
+                success "Initramfs rebuilt via xbps-reconfigure for ZFSBootMenu"
             else
-                error_exit "Failed to rebuild initramfs for ZFSBootMenu"
+                # Fallback to manual dracut with ZFS config from installation script
+                warning "xbps-reconfigure failed, trying manual dracut..."
+                local dracut_args
+                dracut_args="-f --kver $latest_kernel --add zfs"
+                
+                # Add key file if it exists (from installation script)
+                if [ -f /etc/zfs/zroot.key ]; then
+                    dracut_args="$dracut_args --install /etc/zfs/zroot.key"
+                fi
+                
+                if dracut $dracut_args; then
+                    success "Initramfs rebuilt for ZFSBootMenu"
+                else
+                    error_exit "Failed to rebuild initramfs for ZFSBootMenu"
+                fi
             fi
         else
             # Traditional dracut
-            if dracut -f --kver "$LATEST_KERNEL"; then
+            if dracut -f --kver "$latest_kernel"; then
                 success "Initramfs rebuilt successfully"
             else
                 error_exit "Failed to rebuild initramfs"
@@ -483,28 +484,38 @@ reimport_zfs_pools() {
         return 0
     fi
     
-    EXPORTED_POOLS=$(cat "$BACKUP_DIR/exported-pools.txt")
+    local exported_pools boot_pools pool
+    exported_pools=$(cat "$BACKUP_DIR/exported-pools.txt")
     
+    # Ensure ZFS module is loaded before import
+    if ! lsmod | grep -q zfs; then
+        info "Loading ZFS module before import..."
+        if ! modprobe zfs; then
+            error_exit "Failed to load ZFS module"
+        fi
+    fi
+    
+    # Match Script 1 logic for pool import order
     if [ "$ZFSBOOTMENU" = true ]; then
         # Import boot pools first for ZBM systems
-        BOOT_POOLS=${BOOT_POOLS:-}
+        boot_pools=${BOOT_POOLS:-}
         
-        if [ -n "$BOOT_POOLS" ]; then
+        if [ -n "$boot_pools" ]; then
             info "Re-importing boot pools first for ZFSBootMenu..."
-            for pool in $BOOT_POOLS; do
+            for pool in $boot_pools; do
                 import_single_pool "$pool" "boot"
             done
         fi
         
         # Then import other pools
-        for pool in $EXPORTED_POOLS; do
-            if [[ " $BOOT_POOLS " != *" $pool "* ]]; then
+        for pool in $exported_pools; do
+            if [[ " $boot_pools " != *" $pool "* ]]; then
                 import_single_pool "$pool" "root"
             fi
         done
     else
         # Traditional import order
-        for pool in $EXPORTED_POOLS; do
+        for pool in $exported_pools; do
             import_single_pool "$pool" "regular"
         done
     fi
@@ -518,53 +529,65 @@ update_zfsbootmenu() {
         return 0
     fi
     
-    if [ "${KERNEL_UPDATED:-false}" != "true" ] && [ "${ZFS_UPDATED:-false}" != "true" ]; then
+    if [ "$KERNEL_UPDATED" != "true" ] && [ "$ZFS_UPDATED" != "true" ]; then
         info "No kernel or ZFS update - skipping ZFSBootMenu regeneration"
         return 0
     fi
     
     info "Updating ZFSBootMenu for updated components..."
     
-    # Check if zfsbootmenu command is available
-    if ! command -v zfsbootmenu >/dev/null 2>&1; then
-        warning "ZFSBootMenu command not found - manual update may be required"
-        return 0
+    # Check if generate-zbm command is available (CORRECTED from ZBM docs)
+    if ! command -v generate-zbm >/dev/null 2>&1; then
+        warning "generate-zbm command not found - trying xbps-reconfigure approach"
+        
+        # Try xbps-reconfigure as per installation script
+        if xbps-reconfigure -f zfsbootmenu; then
+            success "ZFSBootMenu regenerated via xbps-reconfigure"
+            return 0
+        else
+            warning "ZFSBootMenu regeneration failed - manual update may be required"
+            return 0
+        fi
     fi
     
-    # Generate new ZBM image
+    # Generate new ZBM image (CORRECTED command from ZBM documentation)
     info "Generating new ZFSBootMenu EFI image..."
     
-    if zfsbootmenu -g; then
+    if generate-zbm; then
         success "ZFSBootMenu image generated successfully"
     else
         error "Failed to generate ZFSBootMenu image"
         
-        # Try manual generation if config exists
-        ZBM_CONFIG_FILE=${ZBM_CONFIG:-/etc/zfsbootmenu/config.yaml}
-        if [ -f "$ZBM_CONFIG_FILE" ]; then
-            warning "Attempting manual ZFSBootMenu generation..."
-            if zfsbootmenu -c "$ZBM_CONFIG_FILE" -g; then
-                success "Manual ZFSBootMenu generation succeeded"
-            else
-                error_exit "ZFSBootMenu generation failed - boot may be broken"
-            fi
+        # Try xbps-reconfigure as fallback (matches installation script)
+        warning "Attempting ZFSBootMenu regeneration via xbps-reconfigure..."
+        if xbps-reconfigure -f zfsbootmenu; then
+            success "ZFSBootMenu regeneration via xbps-reconfigure succeeded"
         else
-            error_exit "ZFSBootMenu generation failed and no config found"
+            error_exit "ZFSBootMenu generation failed - boot may be broken"
         fi
     fi
     
-    # Verify EFI image was created/updated
-    if [ -n "${ESP_MOUNT:-}" ] && [ -n "${ZBM_EFI_PATH:-}" ]; then
-        if [ -f "$ZBM_EFI_PATH" ]; then
-            ZBM_SIZE=$(stat -c%s "$ZBM_EFI_PATH" 2>/dev/null || stat -f --format="%s" "$ZBM_EFI_PATH" 2>/dev/null)
-            if [ "${ZBM_SIZE:-0}" -gt 1000000 ]; then  # > 1MB indicates valid EFI image
-                success "ZFSBootMenu EFI image appears valid (${ZBM_SIZE} bytes)"
-            else
-                warning "ZFSBootMenu EFI image seems too small (${ZBM_SIZE} bytes)"
-            fi
+    # Verify EFI image was created/updated (match installation script paths)
+    local zbm_efi_path esp_mount
+    esp_mount=${ESP_MOUNT:-/boot/efi}
+    zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz.efi"
+    
+    if [ -f "$zbm_efi_path" ]; then
+        local zbm_size
+        zbm_size=$(stat -c%s "$zbm_efi_path" 2>/dev/null || stat -f --format="%s" "$zbm_efi_path" 2>/dev/null || echo "0")
+        if [ "${zbm_size:-0}" -gt 1000000 ]; then  # > 1MB indicates valid EFI image
+            success "ZFSBootMenu EFI image appears valid (${zbm_size} bytes)"
         else
-            error "ZFSBootMenu EFI image not found at expected location: $ZBM_EFI_PATH"
+            warning "ZFSBootMenu EFI image seems too small (${zbm_size} bytes)"
         fi
+        
+        # Check backup image too (matches installation script structure)
+        local zbm_backup_path="$esp_mount/EFI/ZBM/vmlinuz-backup.efi"
+        if [ -f "$zbm_backup_path" ]; then
+            info "Backup ZFSBootMenu image also exists"
+        fi
+    else
+        error "ZFSBootMenu EFI image not found at expected location: $zbm_efi_path"
     fi
 }
 
@@ -573,7 +596,7 @@ update_bootloader() {
         update_zfsbootmenu
     else
         # Traditional bootloader update (GRUB)
-        if [ "${KERNEL_UPDATED:-false}" = "true" ]; then
+        if [ "$KERNEL_UPDATED" = "true" ]; then
             info "Updating GRUB configuration..."
             
             if command -v update-grub >/dev/null 2>&1; then
@@ -599,6 +622,8 @@ update_bootloader() {
 
 verify_basic_functionality() {
     info "Performing basic ZFS functionality verification..."
+    
+    local current_zfs zfs_userland
     
     # Check if ZFS module is loaded
     if lsmod | grep -q zfs; then
@@ -627,19 +652,24 @@ verify_basic_functionality() {
         info "No ZFS pools to verify"
     fi
     
-    # Verify package versions match
+    # Verify package versions match (improved detection like Script 1)
     info "Verifying updated package versions..."
-    CURRENT_ZFS=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
-    ZFS_USERLAND=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+    current_zfs=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
+    zfs_userland=$(zfs version 2>/dev/null | grep -E "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
     
-    log "Updated ZFS kernel module: $CURRENT_ZFS"
-    log "Updated ZFS userland: $ZFS_USERLAND"
+    # Fallback to alternative zfs version detection
+    if [ "$zfs_userland" = "unknown" ]; then
+        zfs_userland=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+    fi
     
-    if [ "$CURRENT_ZFS" != "unknown" ] && [ "$ZFS_USERLAND" != "unknown" ]; then
-        if [ "$CURRENT_ZFS" = "$ZFS_USERLAND" ]; then
+    log "Updated ZFS kernel module: $current_zfs"
+    log "Updated ZFS userland: $zfs_userland"
+    
+    if [ "$current_zfs" != "unknown" ] && [ "$zfs_userland" != "unknown" ]; then
+        if [ "$current_zfs" = "$zfs_userland" ]; then
             success "ZFS kernel and userland versions match after update"
         else
-            warning "ZFS version mismatch after update: kernel=$CURRENT_ZFS, userland=$ZFS_USERLAND"
+            warning "ZFS version mismatch after update: kernel=$current_zfs, userland=$zfs_userland"
         fi
     fi
     
@@ -673,17 +703,14 @@ main() {
         echo "1. Skip pool operations (no pools detected)"
     fi
     echo "3. Update ZFS, dracut, and kernel packages"
-    if [ "${DKMS_AVAILABLE:-false}" = "true" ]; then
-        echo "4. Rebuild DKMS modules if needed"
-    fi
-    echo "5. Rebuild initramfs if needed"
+    echo "4. Rebuild initramfs if needed"
     if [ "$ZFSBOOTMENU" = true ]; then
-        echo "6. Update ZFSBootMenu EFI image"
+        echo "5. Update ZFSBootMenu EFI image"
     else
-        echo "6. Update bootloader configuration"
+        echo "5. Update bootloader configuration"
     fi
     if [ "$POOLS_EXIST" = "true" ]; then
-        echo "7. Re-import ZFS pools"
+        echo "6. Re-import ZFS pools"
     fi
     echo ""
     read -p "Continue with installation? (y/N): " -n 1 -r
@@ -697,7 +724,6 @@ main() {
     create_installation_snapshot
     export_zfs_pools
     install_updates
-    rebuild_dkms_modules
     rebuild_initramfs
     reimport_zfs_pools
     update_bootloader
@@ -709,7 +735,7 @@ main() {
     
     echo "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
     
-    if [ "${KERNEL_UPDATED:-false}" = "true" ]; then
+    if [ "$KERNEL_UPDATED" = "true" ]; then
         echo -e "${YELLOW}⚠ REBOOT REQUIRED${NC} - Kernel was updated"
         if [ "$ZFSBOOTMENU" = true ]; then
             echo -e "${BLUE}ℹ ZFSBootMenu EFI image updated${NC}"
