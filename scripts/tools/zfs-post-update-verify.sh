@@ -9,6 +9,13 @@ set -euo pipefail
 CONFIG_FILE="/etc/zfs-update.conf"
 LOG_FILE="/var/log/zfs-post-verify-$(date +%Y%m%d-%H%M%S).log"
 
+# Global variables for cross-function use
+RUNNING_KERNEL=""
+LATEST_KERNEL=""
+ZFS_MODULE_VERSION=""
+ZFS_USERLAND_VERSION=""
+KERNEL_MISMATCH=false
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -60,33 +67,32 @@ load_config() {
         KERNEL_UPDATED=false
         DRACUT_UPDATED=false
         ZFS_UPDATED=false
-        DKMS_UPDATED=false
-        DKMS_AVAILABLE=false
         BACKUP_DIR=""
         return 0
     fi
     
     source "$CONFIG_FILE"
     
-    # Set defaults for variables that might not exist
+    # Set defaults for variables that might not exist - match Scripts 1 & 2
     ZFSBOOTMENU=${ZFSBOOTMENU:-false}
     POOLS_EXIST=${POOLS_EXIST:-false}
     KERNEL_UPDATED=${KERNEL_UPDATED:-false}
     DRACUT_UPDATED=${DRACUT_UPDATED:-false}
     ZFS_UPDATED=${ZFS_UPDATED:-false}
-    DKMS_UPDATED=${DKMS_UPDATED:-false}
-    DKMS_AVAILABLE=${DKMS_AVAILABLE:-false}
     BACKUP_DIR=${BACKUP_DIR:-""}
     ZFS_COUNT=${ZFS_COUNT:-0}
+    ZBM_COUNT=${ZBM_COUNT:-0}
     DRACUT_COUNT=${DRACUT_COUNT:-0}
     KERNEL_COUNT=${KERNEL_COUNT:-0}
-    DKMS_COUNT=${DKMS_COUNT:-0}
+    FIRMWARE_COUNT=${FIRMWARE_COUNT:-0}
     TOTAL_UPDATES=${TOTAL_UPDATES:-0}
+    ESP_MOUNT=${ESP_MOUNT:-/boot/efi}
+    BOOT_POOLS=${BOOT_POOLS:-""}
     
     info "Configuration loaded"
     log "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
     log "Pools exist: $POOLS_EXIST"
-    log "Updates applied - Kernel: $KERNEL_UPDATED, ZFS: $ZFS_UPDATED, Dracut: $DRACUT_UPDATED, DKMS: $DKMS_UPDATED"
+    log "Updates applied - Kernel: $KERNEL_UPDATED, ZFS: $ZFS_UPDATED, Dracut: $DRACUT_UPDATED"
     log "Total updates performed: $TOTAL_UPDATES"
 }
 
@@ -99,32 +105,39 @@ check_root() {
 verify_kernel_version() {
     info "Verifying kernel version..."
     
-    RUNNING_KERNEL=$(uname -r)
-    INSTALLED_KERNELS=$(ls /lib/modules 2>/dev/null | sort -V || echo "")
-    LATEST_KERNEL=$(echo "$INSTALLED_KERNELS" | tail -1)
+    local running_kernel installed_kernels latest_kernel kernel_mismatch
     
-    log "Running kernel: $RUNNING_KERNEL"
-    log "Latest installed kernel: $LATEST_KERNEL"
+    running_kernel=$(uname -r)
+    installed_kernels=$(ls /lib/modules 2>/dev/null | sort -V || echo "")
+    latest_kernel=$(echo "$installed_kernels" | tail -1)
     
-    if [ "$RUNNING_KERNEL" = "$LATEST_KERNEL" ]; then
+    log "Running kernel: $running_kernel"
+    log "Latest installed kernel: $latest_kernel"
+    
+    if [ "$running_kernel" = "$latest_kernel" ]; then
         success "Running the latest installed kernel"
-        KERNEL_MISMATCH=false
+        kernel_mismatch=false
     else
         if [ "$KERNEL_UPDATED" = true ]; then
-            warning "Running kernel ($RUNNING_KERNEL) != latest installed ($LATEST_KERNEL)"
+            warning "Running kernel ($running_kernel) != latest installed ($latest_kernel)"
             warning "This is expected if you haven't rebooted after kernel update"
-            KERNEL_MISMATCH=true
+            kernel_mismatch=true
         else
             info "Kernel versions differ but no kernel update was performed"
-            KERNEL_MISMATCH=false
+            kernel_mismatch=false
         fi
     fi
     
+    # Export global variables
+    RUNNING_KERNEL="$running_kernel"
+    LATEST_KERNEL="$latest_kernel"
+    KERNEL_MISMATCH=$kernel_mismatch
+    
     # Save kernel info to config for future reference
     {
-        echo "RUNNING_KERNEL=\"$RUNNING_KERNEL\""
-        echo "LATEST_KERNEL=\"$LATEST_KERNEL\""
-        echo "KERNEL_MISMATCH=$KERNEL_MISMATCH"
+        echo "RUNNING_KERNEL=\"$running_kernel\""
+        echo "LATEST_KERNEL=\"$latest_kernel\""
+        echo "KERNEL_MISMATCH=$kernel_mismatch"
     } >> "$CONFIG_FILE" 2>/dev/null || true
 }
 
@@ -136,21 +149,26 @@ verify_zfs_module() {
     fi
     success "ZFS kernel module is loaded"
     
+    local zfs_module_version zfs_module_kernel running_kernel_short
+    
     # Get ZFS module version and kernel compatibility
-    ZFS_MODULE_VERSION=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
-    ZFS_MODULE_KERNEL=$(modinfo zfs 2>/dev/null | grep -E "^vermagic:" | awk '{print $2}' || echo "unknown")
-    RUNNING_KERNEL_SHORT=$(echo "$RUNNING_KERNEL" | cut -d- -f1-2)
+    zfs_module_version=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
+    zfs_module_kernel=$(modinfo zfs 2>/dev/null | grep -E "^vermagic:" | awk '{print $2}' || echo "unknown")
+    running_kernel_short=$(echo "$RUNNING_KERNEL" | cut -d- -f1-2)
     
-    log "ZFS kernel module version: $ZFS_MODULE_VERSION"
-    log "ZFS module built for kernel: $ZFS_MODULE_KERNEL"
-    log "Running kernel (short): $RUNNING_KERNEL_SHORT"
+    log "ZFS kernel module version: $zfs_module_version"
+    log "ZFS module built for kernel: $zfs_module_kernel"
+    log "Running kernel (short): $running_kernel_short"
     
-    if [[ "$ZFS_MODULE_KERNEL" == "$RUNNING_KERNEL_SHORT"* ]] || [ "$ZFS_MODULE_KERNEL" = "unknown" ]; then
+    if [[ "$zfs_module_kernel" == "$running_kernel_short"* ]] || [ "$zfs_module_kernel" = "unknown" ]; then
         success "ZFS module matches running kernel"
     else
-        warning "ZFS module kernel version ($ZFS_MODULE_KERNEL) may not match running kernel ($RUNNING_KERNEL_SHORT)"
+        warning "ZFS module kernel version ($zfs_module_kernel) may not match running kernel ($running_kernel_short)"
         warning "This could indicate the ZFS module needs rebuilding"
     fi
+    
+    # Export global variable
+    ZFS_MODULE_VERSION="$zfs_module_version"
 }
 
 verify_zfs_userland() {
@@ -166,31 +184,44 @@ verify_zfs_userland() {
     
     success "ZFS userland tools are available"
     
-    # Get userland version
-    ZFS_USERLAND_VERSION=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
-    log "ZFS userland version: $ZFS_USERLAND_VERSION"
+    local zfs_userland_version
+    
+    # Get userland version - match detection from Scripts 1 & 2
+    zfs_userland_version=$(zfs version 2>/dev/null | grep -E "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
+    
+    # Fallback to alternative detection
+    if [ "$zfs_userland_version" = "unknown" ]; then
+        zfs_userland_version=$(zfs version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+    fi
+    
+    log "ZFS userland version: $zfs_userland_version"
     
     # Compare module and userland versions
-    if [ "$ZFS_MODULE_VERSION" != "unknown" ] && [ "$ZFS_USERLAND_VERSION" != "unknown" ]; then
-        if [ "$ZFS_MODULE_VERSION" = "$ZFS_USERLAND_VERSION" ]; then
+    if [ "$ZFS_MODULE_VERSION" != "unknown" ] && [ "$zfs_userland_version" != "unknown" ]; then
+        if [ "$ZFS_MODULE_VERSION" = "$zfs_userland_version" ]; then
             success "ZFS kernel module and userland versions match"
         else
-            warning "ZFS kernel module ($ZFS_MODULE_VERSION) and userland ($ZFS_USERLAND_VERSION) versions differ"
+            warning "ZFS kernel module ($ZFS_MODULE_VERSION) and userland ($zfs_userland_version) versions differ"
             warning "This is unusual and may indicate an incomplete update"
         fi
     fi
+    
+    # Export global variable
+    ZFS_USERLAND_VERSION="$zfs_userland_version"
 }
 
 verify_dracut_functionality() {
     info "Verifying dracut functionality..."
+    
+    local dracut_version
     
     if ! command -v dracut >/dev/null 2>&1; then
         warning "dracut command not found"
         return 0
     fi
     
-    DRACUT_VERSION=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
-    log "Dracut version: $DRACUT_VERSION"
+    dracut_version=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
+    log "Dracut version: $dracut_version"
     
     # Check if dracut can detect ZFS modules
     if dracut --list-modules 2>/dev/null | grep -q zfs; then
@@ -199,49 +230,18 @@ verify_dracut_functionality() {
         warning "Dracut may not have ZFS module support"
     fi
     
-    # Check dracut configuration
+    # Check dracut configuration - match installation script expectations
     if [ -f /etc/dracut.conf ] || [ -d /etc/dracut.conf.d ]; then
         success "Dracut configuration found"
         
-        # Look for ZFS-related configuration
-        if grep -r "zfs" /etc/dracut.conf /etc/dracut.conf.d/ 2>/dev/null | grep -v "^#"; then
+        # Look for ZFS-related configuration from installation script
+        if [ -f /etc/dracut.conf.d/zfs.conf ]; then
+            success "ZFS-specific dracut configuration found"
+        elif grep -r "zfs" /etc/dracut.conf /etc/dracut.conf.d/ 2>/dev/null | grep -v "^#" >/dev/null; then
             info "ZFS configuration found in dracut settings"
         fi
     else
         info "No custom dracut configuration found (using defaults)"
-    fi
-}
-
-verify_dkms_status() {
-    if [ "${DKMS_AVAILABLE:-false}" != "true" ]; then
-        info "DKMS not available - skipping DKMS verification"
-        return 0
-    fi
-    
-    info "Verifying DKMS status..."
-    
-    if ! command -v dkms >/dev/null 2>&1; then
-        warning "DKMS command not available"
-        return 0
-    fi
-    
-    DKMS_STATUS=$(dkms status zfs 2>/dev/null || echo "not found")
-    log "DKMS ZFS status: $DKMS_STATUS"
-    
-    # Check if ZFS modules are properly installed for current kernel
-    RUNNING_KERNEL=$(uname -r)
-    if echo "$DKMS_STATUS" | grep -q "$RUNNING_KERNEL.*installed"; then
-        success "DKMS ZFS module installed for running kernel"
-    elif echo "$DKMS_STATUS" | grep -q "installed"; then
-        warning "DKMS ZFS module installed but may not match running kernel"
-        log "Current kernel: $RUNNING_KERNEL"
-        log "DKMS status: $DKMS_STATUS"
-    else
-        if [ "${DKMS_UPDATED:-false}" = "true" ] || [ "${ZFS_UPDATED:-false}" = "true" ]; then
-            error "DKMS ZFS module not properly installed after update"
-        else
-            info "DKMS ZFS module status: $DKMS_STATUS"
-        fi
     fi
 }
 
@@ -257,51 +257,53 @@ verify_pool_status() {
         error_exit "Cannot list ZFS pools"
     fi
     
-    # Get list of current pools
-    POOL_LIST=$(zpool list -H -o name 2>/dev/null || echo "")
+    local pool_list pool_errors pool_warnings pool pool_state
     
-    if [ -z "$POOL_LIST" ]; then
+    # Get list of current pools
+    pool_list=$(zpool list -H -o name 2>/dev/null || echo "")
+    
+    if [ -z "$pool_list" ]; then
         warning "No ZFS pools found (but pools were expected)"
         return 0
     fi
     
-    info "Found pools: $POOL_LIST"
+    info "Found pools: $pool_list"
     
     # Check each pool status
-    POOL_ERRORS=0
-    POOL_WARNINGS=0
+    pool_errors=0
+    pool_warnings=0
     
-    for pool in $POOL_LIST; do
+    for pool in $pool_list; do
         log "Checking pool: $pool"
         
-        POOL_STATE=$(zpool list -H -o health "$pool" 2>/dev/null || echo "UNKNOWN")
+        pool_state=$(zpool list -H -o health "$pool" 2>/dev/null || echo "UNKNOWN")
         
-        case "$POOL_STATE" in
+        case "$pool_state" in
             "ONLINE")
                 success "Pool $pool is ONLINE"
                 ;;
             "DEGRADED")
                 warning "Pool $pool is DEGRADED"
-                ((POOL_WARNINGS++))
+                ((pool_warnings++))
                 ;;
             "FAULTED"|"OFFLINE"|"UNAVAIL")
-                error "Pool $pool is $POOL_STATE"
-                ((POOL_ERRORS++))
+                error "Pool $pool is $pool_state"
+                ((pool_errors++))
                 ;;
             *)
-                warning "Pool $pool has unknown state: $POOL_STATE"
-                ((POOL_WARNINGS++))
+                warning "Pool $pool has unknown state: $pool_state"
+                ((pool_warnings++))
                 ;;
         esac
     done
     
     # Overall pool health summary
-    if [ $POOL_ERRORS -eq 0 ] && [ $POOL_WARNINGS -eq 0 ]; then
+    if [ $pool_errors -eq 0 ] && [ $pool_warnings -eq 0 ]; then
         success "All pools are healthy"
-    elif [ $POOL_ERRORS -eq 0 ]; then
-        warning "$POOL_WARNINGS pools have warnings"
+    elif [ $pool_errors -eq 0 ]; then
+        warning "$pool_warnings pools have warnings"
     else
-        error "$POOL_ERRORS pools have errors, $POOL_WARNINGS have warnings"
+        error "$pool_errors pools have errors, $pool_warnings have warnings"
         info "Detailed pool status:"
         zpool status -v | tee -a "$LOG_FILE"
         error_exit "Critical pool errors detected"
@@ -315,24 +317,26 @@ verify_pool_import() {
     
     info "Verifying all expected pools are imported..."
     
+    local expected_pools current_pools missing_pools pool
+    
     # Check if we have the backup of expected pools
     if [ -n "$BACKUP_DIR" ] && [ -f "$BACKUP_DIR/exported-pools.txt" ]; then
-        EXPECTED_POOLS=$(cat "$BACKUP_DIR/exported-pools.txt" 2>/dev/null || echo "")
-        CURRENT_POOLS=$(zpool list -H -o name 2>/dev/null || echo "")
+        expected_pools=$(cat "$BACKUP_DIR/exported-pools.txt" 2>/dev/null || echo "")
+        current_pools=$(zpool list -H -o name 2>/dev/null || echo "")
         
-        if [ -n "$EXPECTED_POOLS" ]; then
-            info "Expected pools: $EXPECTED_POOLS"
-            info "Current pools: $CURRENT_POOLS"
+        if [ -n "$expected_pools" ]; then
+            info "Expected pools: $expected_pools"
+            info "Current pools: $current_pools"
             
-            MISSING_POOLS=""
-            for pool in $EXPECTED_POOLS; do
-                if ! echo "$CURRENT_POOLS" | grep -q "^$pool$"; then
-                    MISSING_POOLS="$MISSING_POOLS $pool"
+            missing_pools=""
+            for pool in $expected_pools; do
+                if ! echo "$current_pools" | grep -q "^$pool$"; then
+                    missing_pools="$missing_pools $pool"
                 fi
             done
             
-            if [ -n "$(echo $MISSING_POOLS | xargs)" ]; then
-                error "Missing pools: $MISSING_POOLS"
+            if [ -n "$(echo $missing_pools | xargs)" ]; then
+                error "Missing pools: $missing_pools"
                 info "Available pools for import:"
                 zpool import 2>&1 | tee -a "$LOG_FILE" || true
                 error_exit "Some pools are missing - check import status above"
@@ -352,43 +356,45 @@ verify_datasets_mounted() {
     
     info "Verifying ZFS datasets are properly mounted..."
     
-    # Get list of datasets that should be mounted
-    MOUNTABLE_DATASETS=$(zfs list -H -o name,canmount,mountpoint 2>/dev/null | awk '$2=="on" && $3!="none" && $3!="-" {print $1}' || echo "")
+    local mountable_datasets mount_errors mount_warnings dataset expected_mount actual_source
     
-    if [ -z "$MOUNTABLE_DATASETS" ]; then
+    # Get list of datasets that should be mounted
+    mountable_datasets=$(zfs list -H -o name,canmount,mountpoint 2>/dev/null | awk '$2=="on" && $3!="none" && $3!="-" {print $1}' || echo "")
+    
+    if [ -z "$mountable_datasets" ]; then
         info "No mountable datasets found"
         return 0
     fi
     
-    MOUNT_ERRORS=0
-    MOUNT_WARNINGS=0
+    mount_errors=0
+    mount_warnings=0
     
-    for dataset in $MOUNTABLE_DATASETS; do
-        EXPECTED_MOUNT=$(zfs get -H -o value mountpoint "$dataset" 2>/dev/null || echo "")
+    for dataset in $mountable_datasets; do
+        expected_mount=$(zfs get -H -o value mountpoint "$dataset" 2>/dev/null || echo "")
         
-        if [ -n "$EXPECTED_MOUNT" ] && [ "$EXPECTED_MOUNT" != "none" ] && [ "$EXPECTED_MOUNT" != "-" ]; then
-            if mountpoint -q "$EXPECTED_MOUNT" 2>/dev/null; then
+        if [ -n "$expected_mount" ] && [ "$expected_mount" != "none" ] && [ "$expected_mount" != "-" ]; then
+            if mountpoint -q "$expected_mount" 2>/dev/null; then
                 # Check if it's actually the ZFS dataset mounted
-                ACTUAL_SOURCE=$(findmnt -n -o SOURCE "$EXPECTED_MOUNT" 2>/dev/null || echo "")
-                if [ "$ACTUAL_SOURCE" = "$dataset" ]; then
-                    log "✓ Dataset $dataset mounted at $EXPECTED_MOUNT"
+                actual_source=$(findmnt -n -o SOURCE "$expected_mount" 2>/dev/null || echo "")
+                if [ "$actual_source" = "$dataset" ]; then
+                    log "✓ Dataset $dataset mounted at $expected_mount"
                 else
-                    warning "Dataset $dataset: mountpoint $EXPECTED_MOUNT exists but wrong source ($ACTUAL_SOURCE)"
-                    ((MOUNT_WARNINGS++))
+                    warning "Dataset $dataset: mountpoint $expected_mount exists but wrong source ($actual_source)"
+                    ((mount_warnings++))
                 fi
             else
-                error "Dataset $dataset not mounted at expected location: $EXPECTED_MOUNT"
-                ((MOUNT_ERRORS++))
+                error "Dataset $dataset not mounted at expected location: $expected_mount"
+                ((mount_errors++))
             fi
         fi
     done
     
-    if [ $MOUNT_ERRORS -eq 0 ] && [ $MOUNT_WARNINGS -eq 0 ]; then
+    if [ $mount_errors -eq 0 ] && [ $mount_warnings -eq 0 ]; then
         success "All datasets are properly mounted"
-    elif [ $MOUNT_ERRORS -eq 0 ]; then
-        warning "$MOUNT_WARNINGS datasets have mount warnings"
+    elif [ $mount_errors -eq 0 ]; then
+        warning "$mount_warnings datasets have mount warnings"
     else
-        error "$MOUNT_ERRORS datasets have mount errors, $MOUNT_WARNINGS have warnings"
+        error "$mount_errors datasets have mount errors, $mount_warnings have warnings"
         error_exit "Dataset mount errors detected"
     fi
 }
@@ -400,23 +406,25 @@ verify_zfsbootmenu() {
     
     info "Verifying ZFSBootMenu configuration..."
     
-    # Check if ZBM command is available
-    if ! command -v zfsbootmenu >/dev/null 2>&1; then
-        warning "ZFSBootMenu command not available"
+    local zbm_config_file zbm_efi_path zbm_size zbm_date image_age_minutes zbm_entries
+    
+    # Check if generate-zbm command is available (CORRECTED)
+    if ! command -v generate-zbm >/dev/null 2>&1; then
+        warning "generate-zbm command not available"
         return 0
     fi
     
-    # Check ZBM configuration
-    ZBM_CONFIG_FILE=${ZBM_CONFIG:-/etc/zfsbootmenu/config.yaml}
-    if [ ! -f "$ZBM_CONFIG_FILE" ]; then
-        warning "ZFSBootMenu configuration not found: $ZBM_CONFIG_FILE"
+    # Check ZBM configuration - match Script 1 paths
+    zbm_config_file=${ZBM_CONFIG:-/etc/zfsbootmenu/config.yaml}
+    if [ ! -f "$zbm_config_file" ]; then
+        warning "ZFSBootMenu configuration not found: $zbm_config_file"
     else
         success "ZFSBootMenu configuration found"
-        log "Config file: $ZBM_CONFIG_FILE"
+        log "Config file: $zbm_config_file"
         
-        # Validate configuration syntax
+        # Validate configuration syntax if yaml-lint available
         if command -v yaml-lint >/dev/null 2>&1; then
-            if yaml-lint "$ZBM_CONFIG_FILE" >/dev/null 2>&1; then
+            if yaml-lint "$zbm_config_file" >/dev/null 2>&1; then
                 success "ZFSBootMenu configuration syntax is valid"
             else
                 warning "ZFSBootMenu configuration may have syntax issues"
@@ -424,47 +432,52 @@ verify_zfsbootmenu() {
         fi
     fi
     
-    # Check EFI image
-    ESP_MOUNT=${ESP_MOUNT:-/boot/efi}
-    ZBM_EFI_PATH=${ZBM_EFI_PATH:-$ESP_MOUNT/EFI/zbm/vmlinuz.efi}
+    # Check EFI image - CORRECTED path to match installation script and Scripts 1 & 2
+    zbm_efi_path="$ESP_MOUNT/EFI/ZBM/vmlinuz.efi"
     
-    if [ -f "$ZBM_EFI_PATH" ]; then
-        ZBM_SIZE=$(stat -c%s "$ZBM_EFI_PATH" 2>/dev/null || stat -f --format="%s" "$ZBM_EFI_PATH" 2>/dev/null || echo "0")
-        ZBM_DATE=$(stat -c%y "$ZBM_EFI_PATH" 2>/dev/null || stat -f --format="%Sc" "$ZBM_EFI_PATH" 2>/dev/null || echo "unknown")
+    if [ -f "$zbm_efi_path" ]; then
+        zbm_size=$(stat -c%s "$zbm_efi_path" 2>/dev/null || stat -f --format="%s" "$zbm_efi_path" 2>/dev/null || echo "0")
+        zbm_date=$(stat -c%y "$zbm_efi_path" 2>/dev/null || stat -f --format="%Sc" "$zbm_efi_path" 2>/dev/null || echo "unknown")
         
-        log "ZFSBootMenu EFI image: $ZBM_EFI_PATH"
-        log "  Size: $ZBM_SIZE bytes"
-        log "  Date: $ZBM_DATE"
+        log "ZFSBootMenu EFI image: $zbm_efi_path"
+        log "  Size: $zbm_size bytes"
+        log "  Date: $zbm_date"
         
-        if [ "$ZBM_SIZE" -gt 1000000 ]; then
+        if [ "$zbm_size" -gt 1000000 ]; then
             success "ZFSBootMenu EFI image appears valid"
         else
-            warning "ZFSBootMenu EFI image seems too small (${ZBM_SIZE} bytes)"
+            warning "ZFSBootMenu EFI image seems too small (${zbm_size} bytes)"
         fi
         
         # Check if the image was updated recently (if kernel was updated)
         if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ]; then
-            IMAGE_AGE_MINUTES=$(( ($(date +%s) - $(stat -c%Y "$ZBM_EFI_PATH" 2>/dev/null || echo "0")) / 60 ))
-            if [ "$IMAGE_AGE_MINUTES" -lt 60 ]; then
-                success "ZFSBootMenu image was recently updated (${IMAGE_AGE_MINUTES} minutes ago)"
+            image_age_minutes=$(( ($(date +%s) - $(stat -c%Y "$zbm_efi_path" 2>/dev/null || echo "0")) / 60 ))
+            if [ "$image_age_minutes" -lt 60 ]; then
+                success "ZFSBootMenu image was recently updated (${image_age_minutes} minutes ago)"
             else
-                warning "ZFSBootMenu image may be outdated (${IMAGE_AGE_MINUTES} minutes old)"
+                warning "ZFSBootMenu image may be outdated (${image_age_minutes} minutes old)"
                 if [ "$KERNEL_UPDATED" = true ]; then
-                    warning "Consider regenerating ZFSBootMenu image: zfsbootmenu -g"
+                    warning "Consider regenerating ZFSBootMenu image: generate-zbm"
                 fi
             fi
         fi
+        
+        # Check backup image too - match installation script structure
+        local zbm_backup_path="$ESP_MOUNT/EFI/ZBM/vmlinuz-backup.efi"
+        if [ -f "$zbm_backup_path" ]; then
+            info "Backup ZFSBootMenu image also exists"
+        fi
     else
-        warning "ZFSBootMenu EFI image not found at: $ZBM_EFI_PATH"
+        warning "ZFSBootMenu EFI image not found at: $zbm_efi_path"
     fi
     
     # Check EFI boot entries
     if command -v efibootmgr >/dev/null 2>&1; then
         info "Checking EFI boot entries..."
-        ZBM_ENTRIES=$(efibootmgr 2>/dev/null | grep -i "zfsbootmenu\|zbm" || echo "")
-        if [ -n "$ZBM_ENTRIES" ]; then
+        zbm_entries=$(efibootmgr 2>/dev/null | grep -i "zfsbootmenu\|ZBM" || echo "")
+        if [ -n "$zbm_entries" ]; then
             success "ZFSBootMenu entries found in EFI boot manager"
-            echo "$ZBM_ENTRIES" | tee -a "$LOG_FILE"
+            echo "$zbm_entries" | tee -a "$LOG_FILE"
         else
             warning "No ZFSBootMenu entries found in EFI boot manager"
         fi
@@ -477,12 +490,14 @@ verify_bootloader() {
     else
         info "Verifying traditional bootloader..."
         
+        local grub_date
+        
         if [ -f /boot/grub/grub.cfg ]; then
-            GRUB_DATE=$(stat -c%y /boot/grub/grub.cfg 2>/dev/null || echo "unknown")
-            log "GRUB config date: $GRUB_DATE"
+            grub_date=$(stat -c%y /boot/grub/grub.cfg 2>/dev/null || echo "unknown")
+            log "GRUB config date: $grub_date"
             
             # Check if latest kernel is in GRUB config
-            if [ -n "${LATEST_KERNEL:-}" ]; then
+            if [ -n "$LATEST_KERNEL" ]; then
                 if grep -q "$LATEST_KERNEL" /boot/grub/grub.cfg 2>/dev/null; then
                     success "Latest kernel ($LATEST_KERNEL) found in GRUB configuration"
                 else
@@ -501,26 +516,27 @@ verify_bootloader() {
 verify_initramfs() {
     info "Verifying initramfs..."
     
-    RUNNING_KERNEL=$(uname -r)
-    INITRAMFS_PATH="/boot/initramfs-${RUNNING_KERNEL}.img"
+    local initramfs_path initramfs_date initramfs_size initramfs_age_minutes
     
-    if [ -f "$INITRAMFS_PATH" ]; then
-        INITRAMFS_DATE=$(stat -c%y "$INITRAMFS_PATH" 2>/dev/null || echo "unknown")
-        INITRAMFS_SIZE=$(stat -c%s "$INITRAMFS_PATH" 2>/dev/null || echo "0")
+    initramfs_path="/boot/initramfs-${RUNNING_KERNEL}.img"
+    
+    if [ -f "$initramfs_path" ]; then
+        initramfs_date=$(stat -c%y "$initramfs_path" 2>/dev/null || echo "unknown")
+        initramfs_size=$(stat -c%s "$initramfs_path" 2>/dev/null || echo "0")
         
-        log "Initramfs for running kernel: $INITRAMFS_PATH"
-        log "  Date: $INITRAMFS_DATE"
-        log "  Size: $INITRAMFS_SIZE bytes"
+        log "Initramfs for running kernel: $initramfs_path"
+        log "  Date: $initramfs_date"
+        log "  Size: $initramfs_size bytes"
         
-        if [ "$INITRAMFS_SIZE" -gt 1000000 ]; then
+        if [ "$initramfs_size" -gt 1000000 ]; then
             success "Initramfs appears valid for running kernel"
         else
-            warning "Initramfs seems too small (${INITRAMFS_SIZE} bytes)"
+            warning "Initramfs seems too small (${initramfs_size} bytes)"
         fi
         
         # Check if ZFS modules are in initramfs
         if command -v lsinitrd >/dev/null 2>&1; then
-            if lsinitrd "$INITRAMFS_PATH" 2>/dev/null | grep -q zfs; then
+            if lsinitrd "$initramfs_path" 2>/dev/null | grep -q zfs; then
                 success "ZFS modules found in initramfs"
             else
                 warning "ZFS modules not detected in initramfs"
@@ -530,7 +546,7 @@ verify_initramfs() {
             fi
         elif command -v zcat >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
             # Alternative method to check initramfs content
-            if zcat "$INITRAMFS_PATH" 2>/dev/null | cpio -t 2>/dev/null | grep -q zfs; then
+            if zcat "$initramfs_path" 2>/dev/null | cpio -t 2>/dev/null | grep -q zfs; then
                 success "ZFS modules found in initramfs (via cpio)"
             else
                 warning "ZFS modules not detected in initramfs (via cpio)"
@@ -539,18 +555,18 @@ verify_initramfs() {
         
         # Check if initramfs was updated recently (if kernel or ZFS was updated)
         if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ] || [ "$DRACUT_UPDATED" = true ]; then
-            INITRAMFS_AGE_MINUTES=$(( ($(date +%s) - $(stat -c%Y "$INITRAMFS_PATH" 2>/dev/null || echo "0")) / 60 ))
-            if [ "$INITRAMFS_AGE_MINUTES" -lt 60 ]; then
-                success "Initramfs was recently updated (${INITRAMFS_AGE_MINUTES} minutes ago)"
+            initramfs_age_minutes=$(( ($(date +%s) - $(stat -c%Y "$initramfs_path" 2>/dev/null || echo "0")) / 60 ))
+            if [ "$initramfs_age_minutes" -lt 60 ]; then
+                success "Initramfs was recently updated (${initramfs_age_minutes} minutes ago)"
             else
-                warning "Initramfs may be outdated (${INITRAMFS_AGE_MINUTES} minutes old)"
+                warning "Initramfs may be outdated (${initramfs_age_minutes} minutes old)"
                 if [ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = true ]; then
                     warning "Consider rebuilding: dracut -f"
                 fi
             fi
         fi
     else
-        warning "Initramfs not found for running kernel: $INITRAMFS_PATH"
+        warning "Initramfs not found for running kernel: $initramfs_path"
         if [ "$KERNEL_UPDATED" = true ]; then
             error "Missing initramfs for running kernel after kernel update"
         fi
@@ -563,6 +579,8 @@ test_basic_zfs_operations() {
     fi
     
     info "Testing basic ZFS operations..."
+    
+    local first_pool test_dataset test_snapshot
     
     # Test zpool list
     if zpool list >/dev/null 2>&1; then
@@ -579,25 +597,25 @@ test_basic_zfs_operations() {
     fi
     
     # Test creating and destroying a test snapshot (if we have writable datasets)
-    FIRST_POOL=$(zpool list -H -o name 2>/dev/null | head -1 || echo "")
-    if [ -n "$FIRST_POOL" ]; then
-        TEST_DATASET=$(zfs list -H -o name -r "$FIRST_POOL" -t filesystem 2>/dev/null | head -1 || echo "")
-        if [ -n "$TEST_DATASET" ]; then
-            TEST_SNAPSHOT="${TEST_DATASET}@zfs-verify-test-$(date +%s)"
+    first_pool=$(zpool list -H -o name 2>/dev/null | head -1 || echo "")
+    if [ -n "$first_pool" ]; then
+        test_dataset=$(zfs list -H -o name -r "$first_pool" -t filesystem 2>/dev/null | head -1 || echo "")
+        if [ -n "$test_dataset" ]; then
+            test_snapshot="${test_dataset}@zfs-verify-test-$(date +%s)"
             
-            if zfs snapshot "$TEST_SNAPSHOT" 2>/dev/null; then
+            if zfs snapshot "$test_snapshot" 2>/dev/null; then
                 success "ZFS snapshot creation works"
                 
                 # Test snapshot listing
-                if zfs list -t snapshot "$TEST_SNAPSHOT" >/dev/null 2>&1; then
+                if zfs list -t snapshot "$test_snapshot" >/dev/null 2>&1; then
                     log "ZFS snapshot listing works"
                 fi
                 
                 # Clean up test snapshot
-                if zfs destroy "$TEST_SNAPSHOT" 2>/dev/null; then
+                if zfs destroy "$test_snapshot" 2>/dev/null; then
                     log "Test snapshot cleaned up successfully"
                 else
-                    warning "Failed to clean up test snapshot: $TEST_SNAPSHOT"
+                    warning "Failed to clean up test snapshot: $test_snapshot"
                 fi
             else
                 warning "ZFS snapshot creation failed (dataset may be read-only)"
@@ -616,23 +634,25 @@ check_rollback_capability() {
     
     info "Verifying rollback capability..."
     
+    local install_snapshot_name snapshot_count existing_snapshots dataset backup_files file
+    
     # Check for installation snapshots
-    INSTALL_SNAPSHOT_NAME=${INSTALL_SNAPSHOT_NAME:-}
-    if [ -n "$INSTALL_SNAPSHOT_NAME" ]; then
-        SNAPSHOT_COUNT=0
-        EXISTING_SNAPSHOTS=""
+    install_snapshot_name=${INSTALL_SNAPSHOT_NAME:-}
+    if [ -n "$install_snapshot_name" ]; then
+        snapshot_count=0
+        existing_snapshots=""
         
         # Check which snapshots actually exist
         for dataset in $(zfs list -H -o name -t filesystem,volume 2>/dev/null || true); do
-            if zfs list -t snapshot "${dataset}@${INSTALL_SNAPSHOT_NAME}" >/dev/null 2>&1; then
-                ((SNAPSHOT_COUNT++))
-                EXISTING_SNAPSHOTS="$EXISTING_SNAPSHOTS ${dataset}@${INSTALL_SNAPSHOT_NAME}"
+            if zfs list -t snapshot "${dataset}@${install_snapshot_name}" >/dev/null 2>&1; then
+                ((snapshot_count++))
+                existing_snapshots="$existing_snapshots ${dataset}@${install_snapshot_name}"
             fi
         done
         
-        if [ $SNAPSHOT_COUNT -gt 0 ]; then
-            success "Found $SNAPSHOT_COUNT installation snapshots for rollback"
-            info "Snapshots available for rollback: $INSTALL_SNAPSHOT_NAME"
+        if [ $snapshot_count -gt 0 ]; then
+            success "Found $snapshot_count installation snapshots for rollback"
+            info "Snapshots available for rollback: $install_snapshot_name"
         else
             warning "No installation snapshots found - rollback may not be possible"
         fi
@@ -645,8 +665,8 @@ check_rollback_capability() {
         success "Backup directory exists for configuration rollback"
         
         # Check key backup files
-        BACKUP_FILES="zfs-datasets.txt zpool-list.txt"
-        for file in $BACKUP_FILES; do
+        backup_files="zfs-datasets.txt zpool-list.txt"
+        for file in $backup_files; do
             if [ -f "$BACKUP_DIR/$file" ]; then
                 log "✓ Backup file found: $file"
             else
@@ -665,7 +685,6 @@ run_comprehensive_checks() {
     verify_zfs_module
     verify_zfs_userland
     verify_dracut_functionality
-    verify_dkms_status
     verify_pool_status
     verify_pool_import
     verify_datasets_mounted
@@ -680,13 +699,12 @@ show_system_summary() {
     
     echo ""
     echo "System Information:"
-    echo "• Running kernel: ${RUNNING_KERNEL:-unknown}"
-    echo "• Latest kernel: ${LATEST_KERNEL:-unknown}"
-    echo "• ZFS module version: ${ZFS_MODULE_VERSION:-unknown}"
-    echo "• ZFS userland version: ${ZFS_USERLAND_VERSION:-unknown}"
+    echo "• Running kernel: $RUNNING_KERNEL"
+    echo "• Latest kernel: $LATEST_KERNEL"
+    echo "• ZFS module version: $ZFS_MODULE_VERSION"
+    echo "• ZFS userland version: $ZFS_USERLAND_VERSION"
     echo "• System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
     echo "• Pools exist: $POOLS_EXIST"
-    echo "• DKMS available: ${DKMS_AVAILABLE:-false}"
     
     if [ "$POOLS_EXIST" = "true" ]; then
         echo ""
@@ -696,11 +714,12 @@ show_system_summary() {
     
     echo ""
     echo "Update Information:"
-    echo "• Total updates applied: ${TOTAL_UPDATES:-0}"
-    echo "• ZFS updates: ${ZFS_COUNT:-0} (updated: ${ZFS_UPDATED:-false})"
-    echo "• Dracut updates: ${DRACUT_COUNT:-0} (updated: ${DRACUT_UPDATED:-false})"
+    echo "• Total updates applied: $TOTAL_UPDATES"
+    echo "• ZFS updates: ${ZFS_COUNT:-0} (updated: $ZFS_UPDATED)"
+    echo "• ZBM updates: ${ZBM_COUNT:-0}"
+    echo "• Dracut updates: ${DRACUT_COUNT:-0} (updated: $DRACUT_UPDATED)"
     echo "• Kernel updates: ${KERNEL_COUNT:-0} (updated: $KERNEL_UPDATED)"
-    echo "• DKMS updates: ${DKMS_COUNT:-0} (updated: ${DKMS_UPDATED:-false})"
+    echo "• Firmware updates: ${FIRMWARE_COUNT:-0}"
     
     echo ""
     echo "Files:"
@@ -721,7 +740,7 @@ show_recommendations() {
     
     # Kernel-specific recommendations
     if [ "$KERNEL_UPDATED" = true ]; then
-        if [ "${KERNEL_MISMATCH:-false}" = true ]; then
+        if [ "$KERNEL_MISMATCH" = true ]; then
             echo ""
             echo -e "${YELLOW}REBOOT NOTICE:${NC}"
             echo "• You're running kernel $RUNNING_KERNEL but $LATEST_KERNEL is installed"
@@ -735,7 +754,7 @@ show_recommendations() {
     fi
     
     # ZFS-specific recommendations
-    if [ "${ZFS_UPDATED:-false}" = "true" ]; then
+    if [ "$ZFS_UPDATED" = "true" ]; then
         echo ""
         echo "ZFS Update Notes:"
         echo "• ZFS was updated successfully"
@@ -745,28 +764,20 @@ show_recommendations() {
     fi
     
     # Dracut-specific recommendations
-    if [ "${DRACUT_UPDATED:-false}" = "true" ]; then
+    if [ "$DRACUT_UPDATED" = "true" ]; then
         echo ""
         echo "Dracut Update Notes:"
         echo "• Dracut was updated - initramfs should be rebuilt"
         echo "• Verify boot functionality on next reboot"
     fi
     
-    # DKMS-specific recommendations
-    if [ "${DKMS_UPDATED:-false}" = "true" ] && [ "${DKMS_AVAILABLE:-false}" = "true" ]; then
-        echo ""
-        echo "DKMS Update Notes:"
-        echo "• DKMS was updated - modules should be rebuilt"
-        echo "• Verify module status: 'dkms status zfs'"
-    fi
-    
     # ZFSBootMenu specific
-    if [ "$ZFSBOOTMENU" = true ] && ([ "$KERNEL_UPDATED" = true ] || [ "${ZFS_UPDATED:-false}" = "true" ]); then
+    if [ "$ZFSBOOTMENU" = true ] && ([ "$KERNEL_UPDATED" = true ] || [ "$ZFS_UPDATED" = "true" ]); then
         echo ""
         echo "ZFSBootMenu Notes:"
         echo "• ZFSBootMenu image should be updated for changes"
         echo "• Verify boot functionality on next reboot"
-        if [ "${KERNEL_MISMATCH:-false}" = true ]; then
+        if [ "$KERNEL_MISMATCH" = true ]; then
             echo "• After reboot, ZFSBootMenu should show new kernel"
         fi
     fi
@@ -775,7 +786,7 @@ show_recommendations() {
     if [ -n "${INSTALL_SNAPSHOT_NAME:-}" ]; then
         echo ""
         echo "Rollback Information:"
-        echo "• Installation snapshots created: ${INSTALL_SNAPSHOT_NAME}"
+        echo "• Installation snapshots created: $INSTALL_SNAPSHOT_NAME"
         echo "• Rollback possible if issues arise"
     fi
 }
