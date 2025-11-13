@@ -141,7 +141,7 @@ create_pool () {
     zpool create -f -o ashift=12                          \
                  -o autotrim=on                           \
                  -O acltype=posixacl                      \
-                 -O compression=zstd                      \
+                 -O compression=lz4                      \
                  -O relatime=on                           \
                  -O xattr=sa                              \
                  -O dnodesize=auto                      \
@@ -433,6 +433,8 @@ nofsck="yes"
 add_dracutmodules+=" zfs "
 omit_dracutmodules+=" btrfs resume "
 install_items+=" /etc/zfs/zroot.key "
+force_drivers+=" zfs "
+filesystems+=" zfs "
 EOF
 
 ### Configure username
