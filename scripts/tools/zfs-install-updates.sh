@@ -446,10 +446,16 @@ import_single_pool() {
     local pool=$1
     local pool_type=${2:-regular}
     
+   
     info "Importing $pool_type pool: $pool"
     
+    # Try standard import first
     if zpool import "$pool" 2>/dev/null; then
         success "Imported $pool"
+        # Handle encrypted pools
+        if zfs get encryption "$pool" 2>/dev/null | grep -v "off"; then
+            info "Pool $pool is encrypted - may need key loading"
+        fi
     else
         error "Failed to import $pool"
         
@@ -555,6 +561,13 @@ update_zfsbootmenu() {
     
     if generate-zbm; then
         success "ZFSBootMenu image generated successfully"
+        
+        # Verify generation worked
+        local zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz.efi"
+        if [ ! -f "$zbm_efi_path" ]; then
+            error "ZFSBootMenu generation reported success but EFI file missing"
+            error_exit "ZFSBootMenu generation verification failed"
+        fi
     else
         error "Failed to generate ZFSBootMenu image"
         

@@ -139,11 +139,7 @@ check_available_updates() {
     zfs_count=$(echo "$zfs_updates" | grep -c "^zfs-" 2>/dev/null || echo "0")
     
     # Check for ZFSBootMenu updates - try multiple patterns
-    zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu-[0-9]" || true)
-    if [ -z "$zbm_updates" ]; then
-        # Try without hyphen in case package name is just 'zfsbootmenu'
-        zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu[[:space:]]" || true)
-    fi
+    zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu " || true)
     if [ -n "$zbm_updates" ]; then
         zbm_count=$(echo "$zbm_updates" | wc -l)
     else
