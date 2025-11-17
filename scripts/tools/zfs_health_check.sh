@@ -2,54 +2,59 @@
 # filepath: zfs_health_check.sh
 
 # ZFS Health Check and Auto-Repair Script for Void Linux
+# All variables properly localized
 # Compatible with voidZFSInstallRepo.sh installation
-# Based on official OpenZFS documentation and best practices
 
 set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Colors for output (these can remain global as they're constants)
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
 
-# Logging
-LOG_FILE="/var/log/zfs_health_check.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+# Logging (these can remain global)
+readonly LOG_FILE="/var/log/zfs_health_check.log"
 
-# Global flags
+# Global flags (these are intentionally global)
 DRY_RUN=false
 AUTO_REPAIR=false
 FORCE_REPAIR=false
 
 log_message() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "$1" | tee -a "$LOG_FILE"
 }
 
 print_header() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "\n${BLUE}=== $1 ===${NC}"
-    log_message "[$TIMESTAMP] === $1 ==="
+    log_message "[$timestamp] === $1 ==="
 }
 
 print_success() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${GREEN}✓ $1${NC}"
-    log_message "[$TIMESTAMP] SUCCESS: $1"
+    log_message "[$timestamp] SUCCESS: $1"
 }
 
 print_warning() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${YELLOW}⚠ $1${NC}"
-    log_message "[$TIMESTAMP] WARNING: $1"
+    log_message "[$timestamp] WARNING: $1"
 }
 
 print_error() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${RED}✗ $1${NC}"
-    log_message "[$TIMESTAMP] ERROR: $1"
+    log_message "[$timestamp] ERROR: $1"
 }
 
 print_repair() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "${BLUE}🔧 $1${NC}"
-    log_message "[$TIMESTAMP] REPAIR: $1"
+    log_message "[$timestamp] REPAIR: $1"
 }
 
 # Check if running as root
@@ -63,6 +68,7 @@ check_root() {
 # Confirm repair action with user
 confirm_repair() {
     local action="$1"
+    local reply
     
     if [[ "$FORCE_REPAIR" == true ]]; then
         return 0
@@ -70,9 +76,9 @@ confirm_repair() {
     
     if [[ "$AUTO_REPAIR" == false ]]; then
         echo -e "${YELLOW}Repair action required: $action${NC}"
-        read -p "Do you want to proceed? [y/N]: " -n 1 -r
+        read -p "Do you want to proceed? [y/N]: " -n 1 -r reply
         echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if [[ ! $reply =~ ^[Yy]$ ]]; then
             print_warning "Repair skipped by user"
             return 1
         fi
@@ -85,6 +91,7 @@ confirm_repair() {
 execute_repair() {
     local command="$1"
     local description="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
     if [[ "$DRY_RUN" == true ]]; then
         print_repair "DRY RUN: Would execute: $command"
@@ -92,7 +99,7 @@ execute_repair() {
     fi
     
     print_repair "Executing: $description"
-    log_message "[$TIMESTAMP] EXECUTING: $command"
+    log_message "[$timestamp] EXECUTING: $command"
     
     if eval "$command" 2>&1 | tee -a "$LOG_FILE"; then
         print_success "Repair completed: $description"
@@ -103,8 +110,10 @@ execute_repair() {
     fi
 }
 
-# Check if ZFS is available
+# Check if ZFS is available and repair if needed
 check_zfs_availability() {
+    local needs_repair=false
+    
     if ! command -v zpool &> /dev/null; then
         print_error "ZFS tools not found. Install with: xbps-install -S zfs"
         exit 1
@@ -112,68 +121,78 @@ check_zfs_availability() {
     
     if ! lsmod | grep -q zfs; then
         print_error "ZFS kernel module not loaded"
-        if confirm_repair "Load ZFS kernel module"; then
+        needs_repair=true
+        
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Load ZFS kernel module"; then
             execute_repair "modprobe zfs" "Loading ZFS kernel module"
         else
             exit 1
         fi
+    else
+        print_success "ZFS kernel module is loaded"
     fi
 }
 
-# Fix ZFS hostid if missing - specific to voidZFSInstallRepo.sh setup
-repair_missing_hostid() {
-    print_header "ZFS Host ID Repair"
+# Check and fix ZFS hostid only if missing or corrupted
+check_and_repair_hostid() {
+    print_header "ZFS Host ID Check"
+    local needs_repair=false
+    local hostid_content
     
     if [[ ! -f /etc/hostid ]]; then
         print_warning "ZFS hostid file missing"
-        if confirm_repair "Generate ZFS hostid"; then
-            execute_repair "zgenhostid" "Generating ZFS hostid"
-        fi
+        needs_repair=true
     else
-        print_success "ZFS hostid file exists"
-        
         # Validate hostid format (should be 8 hex chars)
-        local hostid_content=$(xxd -p /etc/hostid 2>/dev/null | tr -d '\n' || echo "invalid")
+        hostid_content=$(xxd -p /etc/hostid 2>/dev/null | tr -d '\n' || echo "invalid")
         if [[ ${#hostid_content} -eq 8 ]] && [[ "$hostid_content" =~ ^[0-9a-f]{8}$ ]]; then
-            print_success "ZFS hostid format is valid: $hostid_content"
+            print_success "ZFS hostid file exists and is valid: $hostid_content"
         else
             print_warning "ZFS hostid appears corrupted"
-            if confirm_repair "Regenerate ZFS hostid"; then
-                execute_repair "zgenhostid" "Regenerating ZFS hostid"
-            fi
+            needs_repair=true
+        fi
+    fi
+    
+    if [[ "$needs_repair" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
+        if confirm_repair "Generate/repair ZFS hostid"; then
+            execute_repair "zgenhostid" "Generating ZFS hostid"
         fi
     fi
 }
 
-# Repair ZFS services - specific to void runit setup
-repair_zfs_services() {
-    print_header "ZFS Services Repair"
-    
-    # Check for void-specific ZFS services
-    local zfs_services=("zfs-import" "zfs-mount")
-    local services_repaired=false
+# Check and repair ZFS services only if they have issues
+check_and_repair_zfs_services() {
+    print_header "ZFS Services Check"
+    local services_need_repair=false
+    local -a zfs_services=("zfs-import" "zfs-mount")
+    local service
+    local service_path
+    local service_link
+    local status
     
     for service in "${zfs_services[@]}"; do
-        local service_path="/etc/sv/$service"
-        local service_link="/var/service/$service"
+        service_path="/etc/sv/$service"
+        service_link="/var/service/$service"
         
         if [[ -d "$service_path" ]]; then
             if [[ -L "$service_link" ]]; then
-                local status=$(sv status "$service" 2>/dev/null || echo "down")
+                status=$(sv status "$service" 2>/dev/null || echo "down")
                 if [[ "$status" =~ "run" ]]; then
                     print_success "Service $service is running"
                 else
                     print_warning "Service $service is not running: $status"
-                    if confirm_repair "Start $service service"; then
+                    services_need_repair=true
+                    
+                    if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Start $service service"; then
                         execute_repair "sv up $service" "Starting $service service"
-                        services_repaired=true
                     fi
                 fi
             else
                 print_warning "Service $service not enabled"
-                if confirm_repair "Enable $service service"; then
+                services_need_repair=true
+                
+                if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Enable $service service"; then
                     execute_repair "ln -sf $service_path $service_link" "Enabling $service service"
-                    services_repaired=true
                 fi
             fi
         else
@@ -181,36 +200,37 @@ repair_zfs_services() {
         fi
     done
     
-    if [[ "$services_repaired" == true ]]; then
+    if [[ "$services_need_repair" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
         print_repair "Waiting for services to stabilize..."
         sleep 3
     fi
 }
 
-# Check ZFS encryption key setup - specific to voidZFSInstallRepo.sh
-check_zfs_encryption_keys() {
+# Check ZFS encryption keys and only repair if issues found
+check_and_repair_zfs_encryption_keys() {
     print_header "ZFS Encryption Key Check"
-    
-    # Check for the specific key file created by installation script
+    local key_issues=false
     local key_file="/etc/zfs/zroot.key"
     local backup_key_dir="/root/zfs-keys"
+    local perms
     
     if [[ -f "$key_file" ]]; then
-        print_success "ZFS encryption key found: $key_file"
-        
         # Check permissions
-        local perms=$(stat -c "%a" "$key_file")
+        perms=$(stat -c "%a" "$key_file")
         if [[ "$perms" == "000" ]]; then
-            print_success "ZFS key permissions are secure (000)"
+            print_success "ZFS encryption key found with secure permissions"
         else
             print_warning "ZFS key permissions are not secure: $perms"
-            if confirm_repair "Secure ZFS key permissions"; then
+            key_issues=true
+            
+            if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Secure ZFS key permissions"; then
                 execute_repair "chmod 000 $key_file" "Setting secure permissions on ZFS key"
             fi
         fi
     else
         print_error "ZFS encryption key missing: $key_file"
         print_error "This may prevent pool import on reboot!"
+        key_issues=true
     fi
     
     # Check backup keys
@@ -219,27 +239,29 @@ check_zfs_encryption_keys() {
             print_success "ZFS key backup found"
         else
             print_warning "ZFS key backup missing"
+            key_issues=true
         fi
     else
         print_warning "ZFS key backup directory missing: $backup_key_dir"
+        key_issues=true
     fi
 }
 
-# Repair dracut initramfs - compatible with voidZFSInstallRepo.sh dracut config
-repair_dracut_initramfs() {
-    print_header "Dracut Initramfs Repair"
-    
+# Check and repair dracut initramfs only if issues detected
+check_and_repair_dracut_initramfs() {
+    print_header "Dracut Initramfs Check"
+    local needs_rebuild=false
     local current_kernel=$(uname -r)
     local initramfs_path="/boot/initramfs-${current_kernel}.img"
-    local needs_rebuild=false
+    local dracut_zfs_conf="/etc/dracut.conf.d/zfs.conf"
+    local -a required_items=("zfs" "zroot.key")
+    local item
     
     # Check specific dracut config from installation
-    local dracut_zfs_conf="/etc/dracut.conf.d/zfs.conf"
     if [[ -f "$dracut_zfs_conf" ]]; then
         print_success "Dracut ZFS configuration found"
         
         # Validate key components from voidZFSInstallRepo.sh
-        local required_items=("zfs" "zroot.key")
         for item in "${required_items[@]}"; do
             if grep -q "$item" "$dracut_zfs_conf"; then
                 print_success "Dracut config includes: $item"
@@ -257,15 +279,24 @@ repair_dracut_initramfs() {
     if [[ ! -f "$initramfs_path" ]]; then
         print_warning "Initramfs missing for current kernel"
         needs_rebuild=true
-    elif ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zfs.ko"; then
-        print_warning "ZFS module not found in initramfs"
-        needs_rebuild=true
-    elif ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zroot.key"; then
-        print_warning "ZFS encryption key not found in initramfs"
-        needs_rebuild=true
+    else
+        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zfs.ko"; then
+            print_warning "ZFS module not found in initramfs"
+            needs_rebuild=true
+        else
+            print_success "ZFS module found in initramfs"
+        fi
+        
+        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zroot.key"; then
+            print_warning "ZFS encryption key not found in initramfs"
+            needs_rebuild=true
+        else
+            print_success "ZFS encryption key found in initramfs"
+        fi
     fi
     
-    if [[ "$needs_rebuild" == true ]]; then
+    # Only rebuild if issues were found
+    if [[ "$needs_rebuild" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
         if confirm_repair "Rebuild initramfs with ZFS support"; then
             # Recreate dracut config if missing
             if [[ ! -f "$dracut_zfs_conf" ]]; then
@@ -282,44 +313,92 @@ EOF" "Creating dracut ZFS configuration"
             
             execute_repair "dracut -f --kver $current_kernel" "Rebuilding initramfs for kernel $current_kernel"
         fi
-    else
-        print_success "Initramfs appears to have proper ZFS support"
+    elif [[ "$needs_rebuild" == false ]]; then
+        print_success "Initramfs has proper ZFS support"
     fi
 }
 
-# Repair ZFSBootMenu configuration - specific to voidZFSInstallRepo.sh setup
-repair_zfsbootmenu() {
-    print_header "ZFSBootMenu Repair"
-    
-    if ! command -v zbm-builder.sh &> /dev/null; then
-        print_warning "ZFSBootMenu not installed"
-        if confirm_repair "Install ZFSBootMenu"; then
-            execute_repair "xbps-install -Sy zfsbootmenu" "Installing ZFSBootMenu"
-        fi
-        return
-    fi
-    
+# Check and repair ZFSBootMenu only if issues found
+check_and_repair_zfsbootmenu() {
+    print_header "ZFSBootMenu Check"
+    local zbm_issues=false
     local zbm_config="/etc/zfsbootmenu/config.yaml"
     local zbm_esp="/boot/efi/EFI/ZBM"
     local zbm_dracut_dir="/etc/zfsbootmenu/dracut.conf.d"
+    local keymap_conf="$zbm_dracut_dir/keymap.conf"
     
-    # Check main ZBM configuration (matches voidZFSInstallRepo.sh)
-    if [[ -f "$zbm_config" ]]; then
-        print_success "ZFSBootMenu configuration found"
+    if ! command -v zbm-builder.sh &> /dev/null; then
+        print_warning "ZFSBootMenu not installed"
+        zbm_issues=true
         
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Install ZFSBootMenu"; then
+            execute_repair "xbps-install -Sy zfsbootmenu" "Installing ZFSBootMenu"
+        fi
+        return
+    else
+        print_success "ZFSBootMenu is installed"
+    fi
+    
+    # Check main ZBM configuration
+    if [[ -f "$zbm_config" ]]; then
         # Check key settings from installation script
         if grep -q "ImageDir: /boot/efi/EFI/ZBM" "$zbm_config" && \
            grep -q "BootMountPoint: /boot/efi" "$zbm_config"; then
-            print_success "ZFSBootMenu configuration matches installation"
+            print_success "ZFSBootMenu configuration is correct"
         else
             print_warning "ZFSBootMenu configuration may be outdated"
+            zbm_issues=true
         fi
     else
         print_warning "ZFSBootMenu configuration missing"
-        if confirm_repair "Create ZFSBootMenu configuration"; then
+        zbm_issues=true
+    fi
+    
+    # Check dracut configuration directory
+    if [[ ! -d "$zbm_dracut_dir" ]]; then
+        print_warning "ZFSBootMenu dracut config directory missing"
+        zbm_issues=true
+    else
+        print_success "ZFSBootMenu dracut directory exists"
+    fi
+    
+    # Check keymap config
+    if [[ ! -f "$keymap_conf" ]]; then
+        print_warning "ZFSBootMenu keymap configuration missing"
+        zbm_issues=true
+    else
+        print_success "ZFSBootMenu keymap configuration found"
+    fi
+    
+    # Check ESP directory and images
+    if [[ ! -d "$zbm_esp" ]]; then
+        print_warning "ZFSBootMenu ESP directory missing"
+        zbm_issues=true
+    else
+        print_success "ZFSBootMenu ESP directory exists"
+    fi
+    
+    # Check for ZBM EFI images
+    if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null; then
+        print_warning "ZFSBootMenu EFI images missing"
+        zbm_issues=true
+    else
+        print_success "ZFSBootMenu EFI images found"
+        
+        # Check for backup image
+        if [[ -f "$zbm_esp/vmlinuz.efi" ]] && [[ ! -f "$zbm_esp/vmlinuz-backup.efi" ]]; then
+            print_warning "ZFSBootMenu backup image missing"
+            zbm_issues=true
+        else
+            print_success "ZFSBootMenu backup image exists"
+        fi
+    fi
+    
+    # Only repair if issues were found
+    if [[ "$zbm_issues" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
+        # Create missing configuration
+        if [[ ! -f "$zbm_config" ]] && confirm_repair "Create ZFSBootMenu configuration"; then
             execute_repair "mkdir -p /etc/zfsbootmenu" "Creating ZBM config directory"
-            
-            # Create config matching voidZFSInstallRepo.sh
             execute_repair "cat > $zbm_config << 'EOF'
 Global:
   ManageImages: true
@@ -336,21 +415,14 @@ Kernel:
   Prefix: vmlinuz
 EOF" "Creating ZFSBootMenu configuration"
         fi
-    fi
-    
-    # Check dracut configuration directory
-    if [[ ! -d "$zbm_dracut_dir" ]]; then
-        print_warning "ZFSBootMenu dracut config directory missing"
-        if confirm_repair "Create ZFSBootMenu dracut directory"; then
+        
+        # Create missing dracut directory
+        if [[ ! -d "$zbm_dracut_dir" ]] && confirm_repair "Create ZFSBootMenu dracut directory"; then
             execute_repair "mkdir -p $zbm_dracut_dir" "Creating ZBM dracut config directory"
         fi
-    fi
-    
-    # Check keymap config (from voidZFSInstallRepo.sh)
-    local keymap_conf="$zbm_dracut_dir/keymap.conf"
-    if [[ ! -f "$keymap_conf" ]]; then
-        print_warning "ZFSBootMenu keymap configuration missing"
-        if confirm_repair "Create keymap configuration"; then
+        
+        # Create missing keymap config
+        if [[ ! -f "$keymap_conf" ]] && confirm_repair "Create keymap configuration"; then
             execute_repair "cat > $keymap_conf << 'EOF'
 install_optional_items+=\" /etc/cmdline.d/keymap.conf \"
 EOF" "Creating keymap configuration"
@@ -360,38 +432,28 @@ EOF" "Creating keymap configuration"
 rd.vconsole.keymap=en
 EOF" "Creating keymap cmdline configuration"
         fi
-    fi
-    
-    # Check ESP directory and images
-    if [[ ! -d "$zbm_esp" ]]; then
-        print_warning "ZFSBootMenu ESP directory missing"
-        if confirm_repair "Create ZFSBootMenu ESP directory"; then
+        
+        # Create missing ESP directory
+        if [[ ! -d "$zbm_esp" ]] && confirm_repair "Create ZFSBootMenu ESP directory"; then
             execute_repair "mkdir -p $zbm_esp" "Creating ZBM ESP directory"
         fi
-    fi
-    
-    # Check for ZBM EFI images
-    if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null; then
-        print_warning "ZFSBootMenu EFI images missing"
-        if confirm_repair "Generate ZFSBootMenu images"; then
+        
+        # Generate missing EFI images
+        if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null && confirm_repair "Generate ZFSBootMenu images"; then
             execute_repair "zbm-builder.sh" "Building ZFSBootMenu images"
         fi
-    else
-        print_success "ZFSBootMenu EFI images found"
         
-        # Check for backup image (created by installation script)
-        if [[ -f "$zbm_esp/vmlinuz.efi" ]] && [[ ! -f "$zbm_esp/vmlinuz-backup.efi" ]]; then
-            print_warning "ZFSBootMenu backup image missing"
-            if confirm_repair "Create backup ZFSBootMenu image"; then
-                execute_repair "cp $zbm_esp/vmlinuz.efi $zbm_esp/vmlinuz-backup.efi" "Creating backup ZBM image"
-            fi
+        # Create missing backup image
+        if [[ -f "$zbm_esp/vmlinuz.efi" ]] && [[ ! -f "$zbm_esp/vmlinuz-backup.efi" ]] && confirm_repair "Create backup ZFSBootMenu image"; then
+            execute_repair "cp $zbm_esp/vmlinuz.efi $zbm_esp/vmlinuz-backup.efi" "Creating backup ZBM image"
         fi
     fi
 }
 
-# Check EFI boot entries - specific to voidZFSInstallRepo.sh boot setup
+# Check EFI boot entries without repair
 check_efi_boot_entries() {
     print_header "EFI Boot Entries Check"
+    local zbm_entries
     
     if ! command -v efibootmgr &> /dev/null; then
         print_warning "efibootmgr not found"
@@ -399,11 +461,11 @@ check_efi_boot_entries() {
     fi
     
     # Check for ZFSBootMenu entries
-    local zbm_entries=$(efibootmgr | grep -c "ZFSBootMenu" || echo "0")
+    zbm_entries=$(efibootmgr | grep -c "ZFSBootMenu" || echo "0")
     
     if [[ "$zbm_entries" -eq 0 ]]; then
         print_warning "No ZFSBootMenu EFI entries found"
-        print_repair "Boot entries may need to be recreated"
+        print_repair "Boot entries may need to be recreated manually"
     elif [[ "$zbm_entries" -eq 1 ]]; then
         print_warning "Only one ZFSBootMenu entry found (backup missing)"
     else
@@ -414,9 +476,11 @@ check_efi_boot_entries() {
     efibootmgr | grep -E "(Boot|ZFSBootMenu)" | head -10
 }
 
-# Check ZFS pool structure specific to voidZFSInstallRepo.sh layout
+# Check ZFS layout without repair
 check_zfs_layout() {
     print_header "ZFS Layout Verification"
+    local root_datasets
+    local subdir
     
     # Check for expected pool structure from installation
     if zpool list zroot &>/dev/null; then
@@ -428,7 +492,7 @@ check_zfs_layout() {
             
             # Check for system datasets
             if zfs list | grep -q "zroot/ROOT/"; then
-                local root_datasets=$(zfs list -H -o name | grep "zroot/ROOT/" | wc -l)
+                root_datasets=$(zfs list -H -o name | grep "zroot/ROOT/" | wc -l)
                 print_success "Found $root_datasets ROOT dataset(s)"
             fi
         else
@@ -451,7 +515,7 @@ check_zfs_layout() {
             print_warning "Data dataset missing (may be normal for minimal installs)"
         fi
         
-        # Check swap dataset if it should exist
+        # Check swap dataset and repair if needed
         if zfs list zroot/swap &>/dev/null; then
             print_success "Swap dataset exists"
             
@@ -460,7 +524,7 @@ check_zfs_layout() {
                 print_success "ZFS swap is active"
             else
                 print_warning "ZFS swap exists but not active"
-                if confirm_repair "Activate ZFS swap"; then
+                if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Activate ZFS swap"; then
                     execute_repair "swapon /dev/zvol/zroot/swap" "Activating ZFS swap"
                 fi
             fi
@@ -475,13 +539,15 @@ get_zfs_pools() {
     zpool list -H -o name 2>/dev/null || true
 }
 
-# Repair pool issues based on status
-repair_pool_issues() {
+# Check and repair pool issues only when found
+check_and_repair_pool_issues() {
     local pool="$1"
-    print_header "Pool Repair: $pool"
-    
+    print_header "Pool Status Check: $pool"
     local status=$(zpool status "$pool" | grep "state:" | awk '{print $2}')
-    local pool_repaired=false
+    local pool_has_issues=false
+    local device
+    local line
+    local new_status
     
     case "$status" in
         "ONLINE")
@@ -489,64 +555,67 @@ repair_pool_issues() {
             ;;
         "DEGRADED")
             print_warning "Pool $pool is DEGRADED"
+            pool_has_issues=true
             
-            # Check for devices that can be cleared
-            if zpool status "$pool" | grep -q "FAULTED.*was /dev/"; then
-                if confirm_repair "Clear faulted devices in pool $pool"; then
-                    # Get faulted devices and try to clear them
-                    zpool status "$pool" | grep "FAULTED" | while read -r line; do
-                        local device=$(echo "$line" | awk '{print $1}')
-                        execute_repair "zpool clear $pool $device" "Clearing faulted device $device"
-                    done
-                    pool_repaired=true
+            if [[ "$AUTO_REPAIR" == true ]]; then
+                # Check for devices that can be cleared
+                if zpool status "$pool" | grep -q "FAULTED.*was /dev/"; then
+                    if confirm_repair "Clear faulted devices in pool $pool"; then
+                        # Get faulted devices and try to clear them
+                        while read -r line; do
+                            device=$(echo "$line" | awk '{print $1}')
+                            execute_repair "zpool clear $pool $device" "Clearing faulted device $device"
+                        done < <(zpool status "$pool" | grep "FAULTED")
+                    fi
                 fi
-            fi
-            
-            # Check for offline devices that can be brought online
-            if zpool status "$pool" | grep -q "OFFLINE"; then
-                if confirm_repair "Bring offline devices online in pool $pool"; then
-                    zpool status "$pool" | grep "OFFLINE" | while read -r line; do
-                        local device=$(echo "$line" | awk '{print $1}')
-                        execute_repair "zpool online $pool $device" "Bringing device $device online"
-                    done
-                    pool_repaired=true
+                
+                # Check for offline devices that can be brought online
+                if zpool status "$pool" | grep -q "OFFLINE"; then
+                    if confirm_repair "Bring offline devices online in pool $pool"; then
+                        while read -r line; do
+                            device=$(echo "$line" | awk '{print $1}')
+                            execute_repair "zpool online $pool $device" "Bringing device $device online"
+                        done < <(zpool status "$pool" | grep "OFFLINE")
+                    fi
                 fi
             fi
             ;;
         "FAULTED")
             print_error "Pool $pool is FAULTED"
-            if confirm_repair "Attempt to clear pool errors"; then
+            pool_has_issues=true
+            
+            if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Attempt to clear pool errors"; then
                 execute_repair "zpool clear $pool" "Clearing pool errors"
-                pool_repaired=true
             fi
             ;;
         "UNAVAIL")
             print_error "Pool $pool is UNAVAILABLE"
-            if confirm_repair "Force import pool $pool"; then
+            pool_has_issues=true
+            
+            if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Force import pool $pool"; then
                 execute_repair "zpool import -f $pool" "Force importing pool"
-                pool_repaired=true
             fi
             ;;
     esac
     
-    if [[ "$pool_repaired" == true ]]; then
+    if [[ "$pool_has_issues" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
         print_repair "Waiting for pool to stabilize..."
         sleep 2
-        local new_status=$(zpool status "$pool" | grep "state:" | awk '{print $2}')
+        new_status=$(zpool status "$pool" | grep "state:" | awk '{print $2}')
         print_repair "Pool $pool status after repair: $new_status"
     fi
 }
 
-# Check and repair pool errors
-repair_pool_errors() {
+# Check and repair pool errors only when found
+check_and_repair_pool_errors() {
     local pool="$1"
-    print_header "Pool Error Repair: $pool"
+    print_header "Pool Error Check: $pool"
     
     if ! zpool status "$pool" | grep -q "errors: No known data errors"; then
         print_warning "Data errors detected in pool $pool"
         zpool status -v "$pool"
         
-        if confirm_repair "Start scrub to repair data errors in pool $pool"; then
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Start scrub to repair data errors in pool $pool"; then
             execute_repair "zpool scrub $pool" "Starting repair scrub"
             print_repair "Scrub started. Monitor progress with: zpool status $pool"
         fi
@@ -555,24 +624,27 @@ repair_pool_errors() {
     fi
 }
 
-# Repair filesystem mount issues
-repair_zfs_filesystem_mounts() {
-    print_header "ZFS Filesystem Mount Repair"
-    
+# Check and repair filesystem mount issues only when found
+check_and_repair_zfs_filesystem_mounts() {
+    print_header "ZFS Filesystem Mount Check"
     local mount_issues=false
+    local dataset
+    local mounted
+    local canmount
+    local mountpoint
     
     # Check unmounted datasets
     while IFS=$'\t' read -r dataset mounted; do
         if [[ "$mounted" == "no" ]]; then
             # Check if dataset should be mounted (canmount property)
-            local canmount=$(zfs get -H -o value canmount "$dataset")
-            local mountpoint=$(zfs get -H -o value mountpoint "$dataset")
+            canmount=$(zfs get -H -o value canmount "$dataset")
+            mountpoint=$(zfs get -H -o value mountpoint "$dataset")
             
             if [[ "$canmount" == "on" && "$mountpoint" != "none" && "$mountpoint" != "legacy" ]]; then
                 print_warning "Dataset $dataset should be mounted but isn't"
                 mount_issues=true
                 
-                if confirm_repair "Mount dataset $dataset"; then
+                if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Mount dataset $dataset"; then
                     execute_repair "zfs mount $dataset" "Mounting dataset $dataset"
                 fi
             fi
@@ -584,13 +656,15 @@ repair_zfs_filesystem_mounts() {
     fi
 }
 
-# Repair boot filesystem properties
-repair_boot_properties() {
+# Check and repair boot properties only when needed
+check_and_repair_boot_properties() {
     local pool="$1"
-    print_header "Boot Properties Repair: $pool"
-    
-    # Check bootfs property (should be set by voidZFSInstallRepo.sh)
+    print_header "Boot Properties Check: $pool"
+    local boot_issues=false
     local bootfs=$(zpool get -H -o value bootfs "$pool")
+    local cachefile
+    local root_datasets
+    local root_dataset
     
     if [[ "$bootfs" != "-" ]]; then
         print_success "Bootfs property set: $bootfs"
@@ -600,25 +674,31 @@ repair_boot_properties() {
             print_success "Bootfs dataset exists and is accessible"
         else
             print_error "Bootfs dataset does not exist: $bootfs"
+            boot_issues=true
         fi
     else
         print_warning "Bootfs property not set on pool $pool"
+        boot_issues=true
         
-        # Try to detect root dataset
-        local root_datasets=$(zfs list -H -o name | grep "^$pool/ROOT/" || true)
-        if [[ -n "$root_datasets" ]]; then
-            local root_dataset=$(echo "$root_datasets" | head -1)
-            if confirm_repair "Set bootfs property to $root_dataset"; then
-                execute_repair "zpool set bootfs=$root_dataset $pool" "Setting bootfs property"
+        if [[ "$AUTO_REPAIR" == true ]]; then
+            # Try to detect root dataset
+            root_datasets=$(zfs list -H -o name | grep "^$pool/ROOT/" || true)
+            if [[ -n "$root_datasets" ]]; then
+                root_dataset=$(echo "$root_datasets" | head -1)
+                if confirm_repair "Set bootfs property to $root_dataset"; then
+                    execute_repair "zpool set bootfs=$root_dataset $pool" "Setting bootfs property"
+                fi
             fi
         fi
     fi
     
     # Check cachefile property
-    local cachefile=$(zpool get -H -o value cachefile "$pool")
+    cachefile=$(zpool get -H -o value cachefile "$pool")
     if [[ "$cachefile" == "-" ]]; then
         print_warning "Cachefile property not set on pool $pool"
-        if confirm_repair "Set cachefile property"; then
+        boot_issues=true
+        
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Set cachefile property"; then
             execute_repair "zpool set cachefile=/etc/zfs/zpool.cache $pool" "Setting cachefile property"
         fi
     else
@@ -626,65 +706,56 @@ repair_boot_properties() {
     fi
 }
 
-# Perform automatic scrub if none has been done
-auto_scrub_check() {
+# Check scrub status and perform if needed
+check_and_perform_scrub() {
     local pool="$1"
-    print_header "Auto Scrub Check: $pool"
-    
+    local force_scrub="$2"
+    print_header "Scrub Status Check: $pool"
     local scrub_status=$(zpool status "$pool" | grep -A1 "scan:")
+    local scrub_needed=false
+    local scrub_age
+    local days
+    local scrub_type
     
     if echo "$scrub_status" | grep -q "none requested"; then
         print_warning "No scrub has been performed on pool $pool"
-        if confirm_repair "Start initial scrub on pool $pool"; then
-            execute_repair "zpool scrub $pool" "Starting initial scrub"
-        fi
+        scrub_needed=true
     elif echo "$scrub_status" | grep -q "scrub in progress"; then
         print_success "Scrub already in progress for pool $pool"
+        return
     else
         # Check scrub age
         if echo "$scrub_status" | grep -q "scrub repaired.*ago"; then
-            local scrub_age=$(echo "$scrub_status" | grep -o "[0-9]\+ days ago" | head -1)
+            scrub_age=$(echo "$scrub_status" | grep -o "[0-9]\+ days ago" | head -1)
             if [[ -n "$scrub_age" ]]; then
-                local days=$(echo "$scrub_age" | grep -o "[0-9]\+")
+                days=$(echo "$scrub_age" | grep -o "[0-9]\+")
                 if [[ $days -gt 30 ]]; then
                     print_warning "Last scrub was $scrub_age (recommended: monthly)"
-                    if confirm_repair "Start maintenance scrub on pool $pool"; then
-                        execute_repair "zpool scrub $pool" "Starting maintenance scrub"
-                    fi
+                    scrub_needed=true
+                else
+                    print_success "Last scrub was recent: $scrub_age"
                 fi
             fi
+        else
+            print_success "Scrub status appears normal"
+        fi
+    fi
+    
+    # Only scrub if needed or forced
+    if ([[ "$scrub_needed" == true ]] && [[ "$AUTO_REPAIR" == true ]]) || [[ "$force_scrub" == true ]]; then
+        scrub_type="maintenance"
+        [[ "$scrub_needed" == true ]] && scrub_type="initial"
+        
+        if confirm_repair "Start $scrub_type scrub on pool $pool"; then
+            execute_repair "zpool scrub $pool" "Starting $scrub_type scrub"
         fi
     fi
 }
 
-# Check pool status
-check_pool_status() {
-    local pool="$1"
-    print_header "Pool Status: $pool"
-    
-    local status=$(zpool status "$pool" | grep "state:" | awk '{print $2}')
-    
-    case "$status" in
-        "ONLINE")
-            print_success "Pool $pool is ONLINE and healthy"
-            ;;
-        "DEGRADED")
-            print_warning "Pool $pool is DEGRADED - repair needed"
-            ;;
-        "FAULTED"|"OFFLINE"|"UNAVAIL")
-            print_error "Pool $pool is in critical state: $status"
-            ;;
-        *)
-            print_warning "Pool $pool has unknown status: $status"
-            ;;
-    esac
-}
-
-# Check pool capacity and suggest actions
+# Check pool capacity
 check_pool_capacity() {
     local pool="$1"
     print_header "Capacity Check: $pool"
-    
     local capacity=$(zpool list -H -o cap "$pool" | tr -d '%')
     
     if [[ $capacity -gt 90 ]]; then
@@ -701,11 +772,14 @@ check_pool_capacity() {
 # Check ARC statistics
 check_arc_stats() {
     print_header "ARC Statistics"
+    local arc_size
+    local arc_max
+    local hit_ratio
     
     if [[ -f /proc/spl/kstat/zfs/arcstats ]]; then
-        local arc_size=$(grep "^size" /proc/spl/kstat/zfs/arcstats | awk '{print $3}')
-        local arc_max=$(grep "^c_max" /proc/spl/kstat/zfs/arcstats | awk '{print $3}')
-        local hit_ratio=$(awk '/^arc_hits/ {hits=$3} /^arc_misses/ {misses=$3} END {printf "%.2f", hits/(hits+misses)*100}' /proc/spl/kstat/zfs/arcstats)
+        arc_size=$(grep "^size" /proc/spl/kstat/zfs/arcstats | awk '{print $3}')
+        arc_max=$(grep "^c_max" /proc/spl/kstat/zfs/arcstats | awk '{print $3}')
+        hit_ratio=$(awk '/^arc_hits/ {hits=$3} /^arc_misses/ {misses=$3} END {printf "%.2f", hits/(hits+misses)*100}' /proc/spl/kstat/zfs/arcstats)
         
         print_success "ARC Hit Ratio: $hit_ratio%"
         print_success "ARC Size: $(($arc_size / 1024 / 1024)) MB / $(($arc_max / 1024 / 1024)) MB"
@@ -719,6 +793,8 @@ main() {
     local scrub_pools=false
     local specific_pool=""
     local check_boot_components=true
+    local pools
+    local pool
     
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -734,6 +810,7 @@ main() {
                 ;;
             --dry-run)
                 DRY_RUN=true
+                AUTO_REPAIR=true  # Enable repair logic for dry-run
                 shift
                 ;;
             --scrub)
@@ -775,21 +852,21 @@ main() {
         print_warning "DRY RUN MODE: No actual changes will be made"
     fi
     
-    if [[ "$AUTO_REPAIR" == true ]]; then
+    if [[ "$AUTO_REPAIR" == true ]] && [[ "$DRY_RUN" == false ]]; then
         print_warning "AUTO REPAIR MODE: Issues will be automatically repaired"
     fi
     
     check_root
     check_zfs_availability
     
-    # Boot-related repairs specific to voidZFSInstallRepo.sh installation
+    # Boot-related checks and repairs (only repair when issues found)
     if [[ "$check_boot_components" == true ]]; then
-        repair_missing_hostid
-        repair_zfs_services
-        check_zfs_encryption_keys
-        repair_dracut_initramfs
-        repair_zfsbootmenu
-        check_efi_boot_entries
+        check_and_repair_hostid
+        check_and_repair_zfs_services  
+        check_and_repair_zfs_encryption_keys
+        check_and_repair_dracut_initramfs
+        check_and_repair_zfsbootmenu
+        check_efi_boot_entries  # Check only, no auto-repair
         check_zfs_layout
     fi
     
@@ -805,21 +882,17 @@ main() {
         exit 0
     fi
     
-    # Check and repair each pool
+    # Check and repair each pool (only when issues found)
     for pool in $pools; do
-        check_pool_status "$pool"
-        repair_pool_issues "$pool"
-        repair_pool_errors "$pool"
-        check_pool_capacity "$pool"
-        repair_boot_properties "$pool"
-        
-        if [[ "$scrub_pools" == true ]] || [[ "$AUTO_REPAIR" == true ]]; then
-            auto_scrub_check "$pool"
-        fi
+        check_and_repair_pool_issues "$pool"
+        check_and_repair_pool_errors "$pool"
+        check_pool_capacity "$pool"  # Check only
+        check_and_repair_boot_properties "$pool"
+        check_and_perform_scrub "$pool" "$scrub_pools"
     done
     
-    repair_zfs_filesystem_mounts
-    check_arc_stats
+    check_and_repair_zfs_filesystem_mounts
+    check_arc_stats  # Check only
     
     print_header "ZFS Health Check Complete"
     print_success "Log saved to: $LOG_FILE"
