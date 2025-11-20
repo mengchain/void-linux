@@ -1,239 +1,215 @@
 #!/bin/bash
-# filepath: check_x11_deps.sh
-
-# X11 Library Dependency Checker for Void Linux
-# Checks for direct and indirect X11 dependencies
+# check_x11_deps.sh - X11 dependency checker for Void Linux packages
+# 
+# Description: Checks if specified packages have direct or indirect X11 dependencies.
+#              Can be used standalone or as part of xbps-wayland workflow.
+#
+# Usage: check_x11_deps.sh <package1> [package2] ...
+# Example: check_x11_deps.sh firefox imv neovim
+#
+# Exit Codes:
+#   0 - No X11 dependencies found in any package
+#   1 - X11 dependencies found in one or more packages  
+#   2 - Error in script execution
+#
+# Author: Generated for Void Linux Wayland-only systems
+# License: Public Domain
 
 set -euo pipefail
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Local script variables
+local readonly SCRIPT_NAME="check_x11_deps"
+local readonly SCRIPT_VERSION="1.0.0"
 
-# Common X11 libraries to check for
-X11_LIBS=(
+# Colors for output (local to this script)
+local readonly RED='\033[0;31m'
+local readonly GREEN='\033[0;32m'
+local readonly YELLOW='\033[1;33m'
+local readonly BLUE='\033[0;34m'
+local readonly NC='\033[0m' # No Color
+
+# X11 libraries to check for (local array)
+local readonly X11_LIBS=(
     "libX11"
-    "libXext"
+    "libXext" 
     "libXrender"
     "libXrandr"
     "libXinerama"
     "libXcursor"
+    "libXcomposite"
     "libXdamage"
     "libXfixes"
-    "libXcomposite"
     "libXi"
     "libXtst"
-    "libXmu"
-    "libXt"
-    "libXaw"
-    "libXpm"
     "libXss"
-    "libXv"
-    "libXvMC"
-    "libXxf86vm"
-    "libXxf86dga"
-    "libXres"
-    "libXScrnSaver"
+    "libXmu"
+    "libXpm"
+    "libXaw"
+    "libXt"
+    "libSM"
+    "libICE"
     "libxcb"
-    "libxkbcommon-x11"
 )
 
-# Function to check if package is installed
-is_installed() {
-    xbps-query -l | grep -q "^ii $1-[0-9]" 2>/dev/null
+# Function to print usage information
+usage() {
+    cat << EOF
+${BLUE}${SCRIPT_NAME}${NC} - X11 dependency checker for Void Linux
+
+${YELLOW}USAGE:${NC}
+    ${SCRIPT_NAME}.sh <package1> [package2] ...
+
+${YELLOW}DESCRIPTION:${NC}
+    Checks if specified packages have direct or indirect X11 dependencies.
+    Useful for maintaining X11-free Wayland-only systems.
+
+${YELLOW}EXAMPLES:${NC}
+    ${SCRIPT_NAME}.sh firefox
+    ${SCRIPT_NAME}.sh firefox imv mpv
+    ${SCRIPT_NAME}.sh neovim
+
+${YELLOW}OPTIONS:${NC}
+    --help, -h    Show this help message
+    --version     Show version information
+
+${YELLOW}EXIT CODES:${NC}
+    0    No X11 dependencies found
+    1    X11 dependencies found
+    2    Error in execution
+
+EOF
 }
 
-# Function to get package dependencies
-get_dependencies() {
-    local pkg="$1"
-    xbps-query -x "$pkg" 2>/dev/null | awk '{print $2}' | sed 's/>=.*$//' | sort -u
+# Function to print version information
+version() {
+    echo "${SCRIPT_NAME} version ${SCRIPT_VERSION}"
+    echo "X11 dependency checker for Void Linux Wayland-only systems"
 }
 
-# Function to get reverse dependencies
-get_reverse_dependencies() {
-    local lib="$1"
-    xbps-query -X "$lib" 2>/dev/null | awk '{print $1}' | sort -u
+# Function to log messages with timestamps (local function)
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    
+    case "$level" in
+        INFO)    echo -e "${BLUE}[INFO]${NC} $message" ;;
+        WARN)    echo -e "${YELLOW}[WARN]${NC} $message" ;;
+        ERROR)   echo -e "${RED}[ERROR]${NC} $message" >&2 ;;
+        SUCCESS) echo -e "${GREEN}[SUCCESS]${NC} $message" ;;
+    esac
 }
 
-# Function to check installed packages for X11 deps
-check_installed_packages() {
-    echo -e "${BLUE}=== Checking Installed Packages for X11 Dependencies ===${NC}"
-    
-    local found_x11=false
-    local x11_packages=()
-    
-    for lib in "${X11_LIBS[@]}"; do
-        if is_installed "$lib"; then
-            x11_packages+=("$lib")
-            found_x11=true
-        fi
-    done
-    
-    if [ "$found_x11" = true ]; then
-        echo -e "${RED}Found X11 libraries installed:${NC}"
-        printf '%s\n' "${x11_packages[@]}" | sed 's/^/  /'
-    else
-        echo -e "${GREEN}No direct X11 libraries found installed.${NC}"
-    fi
-    
-    return $([[ "$found_x11" == true ]] && echo 1 || echo 0)
-}
-
-# Function to check specific package for X11 dependencies
-check_package_deps() {
+# Function to check if package has X11 dependencies
+check_package_x11_deps() {
     local package="$1"
-    echo -e "\n${BLUE}=== Checking '$package' Dependencies ===${NC}"
+    local has_x11_deps=false
+    local -a x11_deps=()
     
-    if ! is_installed "$package"; then
-        echo -e "${YELLOW}Package '$package' is not installed.${NC}"
+    log INFO "Checking dependencies for: $package"
+    
+    # Get all dependencies recursively using xbps-query
+    local all_deps
+    if ! all_deps=$(xbps-query -R -x "$package" 2>/dev/null); then
+        log WARN "Could not query dependencies for package: $package (package might not exist)"
         return 0
     fi
     
-    local deps
-    deps=$(get_dependencies "$package")
-    local found_x11=false
-    
-    echo "Direct dependencies:"
-    for dep in $deps; do
-        echo "  $dep"
+    # Check each dependency against our X11 library list
+    while IFS= read -r dep; do
+        # Skip empty lines
+        [[ -z "$dep" ]] && continue
+        
+        # Check if dependency matches any X11 library
+        local x11_lib
         for x11_lib in "${X11_LIBS[@]}"; do
-            if [[ "$dep" == "$x11_lib"* ]]; then
-                echo -e "    ${RED}↳ X11 dependency: $dep${NC}"
-                found_x11=true
+            if [[ "$dep" == *"$x11_lib"* ]]; then
+                has_x11_deps=true
+                x11_deps+=("$dep")
+                break
             fi
         done
-    done
+    done <<< "$all_deps"
     
-    return $([[ "$found_x11" == true ]] && echo 1 || echo 0)
-}
-
-# Function to recursively check dependencies
-check_recursive_deps() {
-    local package="$1"
-    local depth="${2:-0}"
-    local max_depth="${3:-3}"
-    local checked_packages="${4:-}"
-    
-    # Avoid infinite loops
-    if [[ "$checked_packages" == *"$package"* ]] || [ "$depth" -gt "$max_depth" ]; then
-        return 0
-    fi
-    
-    checked_packages="$checked_packages $package"
-    local indent=""
-    for ((i=0; i<depth; i++)); do
-        indent="  $indent"
-    done
-    
-    if ! is_installed "$package"; then
-        return 0
-    fi
-    
-    local deps
-    deps=$(get_dependencies "$package")
-    local found_x11=false
-    
-    for dep in $deps; do
-        for x11_lib in "${X11_LIBS[@]}"; do
-            if [[ "$dep" == "$x11_lib"* ]]; then
-                echo -e "$indent${RED}$dep (X11)${NC}"
-                found_x11=true
-            else
-                echo "$indent$dep"
-                if [ "$depth" -lt "$max_depth" ]; then
-                    check_recursive_deps "$dep" $((depth + 1)) "$max_depth" "$checked_packages"
-                fi
-            fi
+    # Report findings
+    if [[ "$has_x11_deps" == true ]]; then
+        log ERROR "Package '$package' has X11 dependencies:"
+        local x11_dep
+        for x11_dep in "${x11_deps[@]}"; do
+            printf "  %s\n" "$x11_dep"
         done
-    done
-    
-    return $([[ "$found_x11" == true ]] && echo 1 || echo 0)
-}
-
-# Function to find what depends on X11 libraries
-find_x11_dependents() {
-    echo -e "\n${BLUE}=== Packages That Depend on X11 Libraries ===${NC}"
-    
-    for lib in "${X11_LIBS[@]}"; do
-        if is_installed "$lib"; then
-            echo -e "\n${YELLOW}Packages depending on $lib:${NC}"
-            local dependents
-            dependents=$(get_reverse_dependencies "$lib")
-            if [ -n "$dependents" ]; then
-                echo "$dependents" | sed 's/^/  /'
-            else
-                echo "  (none found)"
-            fi
-        fi
-    done
-}
-
-# Function to generate removal suggestions
-suggest_removals() {
-    echo -e "\n${BLUE}=== X11 Removal Suggestions ===${NC}"
-    
-    local removable_libs=()
-    for lib in "${X11_LIBS[@]}"; do
-        if is_installed "$lib"; then
-            local dependents
-            dependents=$(get_reverse_dependencies "$lib")
-            if [ -z "$dependents" ]; then
-                removable_libs+=("$lib")
-            fi
-        fi
-    done
-    
-    if [ ${#removable_libs[@]} -gt 0 ]; then
-        echo -e "${GREEN}Potentially removable X11 libraries (no dependents):${NC}"
-        printf '%s\n' "${removable_libs[@]}" | sed 's/^/  /'
-        echo ""
-        echo "To remove:"
-        echo "  sudo xbps-remove -R ${removable_libs[*]}"
+        return 1
     else
-        echo -e "${YELLOW}No X11 libraries can be safely removed (all have dependents).${NC}"
+        log SUCCESS "Package '$package' is X11-free ✓"
+        return 0
     fi
 }
 
 # Main function
 main() {
-    echo -e "${GREEN}X11 Dependency Checker for Void Linux${NC}"
-    echo "======================================"
+    # Handle special arguments
+    case "${1:-}" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --version)
+            version
+            exit 0
+            ;;
+        "")
+            log ERROR "No packages provided"
+            usage
+            exit 2
+            ;;
+    esac
     
-    # Check for X11 libraries
-    if check_installed_packages; then
-        find_x11_dependents
-        suggest_removals
+    # Check if xbps-query is available
+    if ! command -v xbps-query >/dev/null 2>&1; then
+        log ERROR "xbps-query not found. Are you running on Void Linux?"
+        exit 2
     fi
     
-    # If package specified, check its dependencies
-    if [ $# -gt 0 ]; then
-        for package in "$@"; do
-            check_package_deps "$package"
-            echo -e "\n${BLUE}Recursive dependency tree for '$package':${NC}"
-            check_recursive_deps "$package"
+    # Local variables for main function
+    local -a packages=("$@")
+    local -a failed_packages=()
+    local total_packages=${#packages[@]}
+    local current=1
+    local package
+    
+    log INFO "Starting X11 dependency check for ${total_packages} package(s)"
+    echo
+    
+    # Check each package for X11 dependencies
+    for package in "${packages[@]}"; do
+        log INFO "[$current/$total_packages] Checking package: $package"
+        
+        if ! check_package_x11_deps "$package"; then
+            failed_packages+=("$package")
+        fi
+        
+        ((current++))
+        echo
+    done
+    
+    # Report final results
+    if [[ ${#failed_packages[@]} -gt 0 ]]; then
+        log ERROR "X11 dependencies found in the following packages:"
+        echo
+        local failed_pkg
+        for failed_pkg in "${failed_packages[@]}"; do
+            printf "${RED}  ✗ %s${NC}\n" "$failed_pkg"
         done
+        echo
+        log ERROR "These packages have X11 dependencies and are not suitable for Wayland-only systems"
+        exit 1
+    else
+        log SUCCESS "All packages are X11-free! ✓"
+        echo
+        log SUCCESS "All ${total_packages} package(s) are suitable for Wayland-only systems"
+        exit 0
     fi
-    
-    echo -e "\n${GREEN}Analysis complete.${NC}"
 }
 
-# Show usage if --help
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    echo "Usage: $0 [package1] [package2] ..."
-    echo ""
-    echo "Checks for X11 library dependencies on Void Linux"
-    echo "If no packages specified, checks all installed packages"
-    echo "If packages specified, analyzes their dependency trees"
-    echo ""
-    echo "Examples:"
-    echo "  $0                    # Check all installed packages"
-    echo "  $0 firefox           # Check firefox dependencies"
-    echo "  $0 kde5 plasma-desktop # Check multiple packages"
-    exit 0
-fi
-
-# Run main function
+# Run main function with all arguments
 main "$@"
