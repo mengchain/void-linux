@@ -465,7 +465,7 @@ chroot /mnt/ /bin/bash -e <<EOF
 
   # Add user
   zfs create zroot/data/home/${user}
-  useradd -m -d /home/${user} -G network,wheel,socklog,video,audio,_seatd,input ${user}
+  useradd -m -d /home/${user} -G network,wheel,video,audio,input ${user}
   chown -R ${user}:${user} /home/${user}
   
   # Enable swap in chroot.
