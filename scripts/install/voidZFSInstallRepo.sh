@@ -371,11 +371,12 @@ packages=(
   efibootmgr
   gummiboot # required by zfsbootmenu
   chrony # ntp
-  seatd
+  seatd  # Session
   cronie # cron
   acpid # power management
   iwd # wifi daemon
   dhclient
+  git
   openresolv # dns
   )
 
@@ -450,13 +451,13 @@ chroot /mnt/ /bin/bash -e <<EOF
   resolvconf -u
 
   # Configure services
-  ln -s /etc/sv/dhcpcd /etc/runit/runsvdir/default/
-  ln -s /etc/sv/iwd /etc/runit/runsvdir/default/
-  ln -s /etc/sv/chronyd /etc/runit/runsvdir/default/
-  ln -s /etc/sv/crond /etc/runit/runsvdir/default/
-  ln -s /etc/sv/dbus /etc/runit/runsvdir/default/
-  ln -s /etc/sv/acpid /etc/runit/runsvdir/default/
-  ln -s /etc/sv/seatd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/dhcpcd /var/service/
+  ln -s /etc/sv/iwd /var/service/
+  ln -s /etc/sv/chronyd /var/service/
+  ln -s /etc/sv/crond /var/service/
+  ln -s /etc/sv/dbus /var/service/
+  ln -s /etc/sv/acpid /var/service/
+  ln -s /etc/sv/seatd /var/service/
 
   # Symlink for the timezone.
   ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
