@@ -371,6 +371,7 @@ packages=(
   efibootmgr
   gummiboot # required by zfsbootmenu
   chrony # ntp
+  seatd
   cronie # cron
   acpid # power management
   iwd # wifi daemon
@@ -455,6 +456,7 @@ chroot /mnt/ /bin/bash -e <<EOF
   ln -s /etc/sv/crond /etc/runit/runsvdir/default/
   ln -s /etc/sv/dbus /etc/runit/runsvdir/default/
   ln -s /etc/sv/acpid /etc/runit/runsvdir/default/
+  ln -s /etc/sv/seatd /etc/runit/runsvdir/default/
 
   # Symlink for the timezone.
   ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
@@ -465,7 +467,7 @@ chroot /mnt/ /bin/bash -e <<EOF
 
   # Add user
   zfs create zroot/data/home/${user}
-  useradd -m -d /home/${user} -G network,wheel,video,audio,input ${user}
+  useradd -m -d /home/${user} -G network,wheel,video,audio,_seatd,input ${user}
   chown -R ${user}:${user} /home/${user}
   
   # Enable swap in chroot.
