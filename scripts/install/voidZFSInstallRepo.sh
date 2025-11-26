@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+export TERM=xterm
+ 
 set -e
 
 exec &> >(tee "configureNinstall.log")
