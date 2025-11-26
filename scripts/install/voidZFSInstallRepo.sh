@@ -453,14 +453,14 @@ chroot /mnt/ /bin/bash -e <<EOF
   resolvconf -u
 
   # Configure services
-  ln -s /etc/sv/dhcpcd /var/service/
-  ln -s /etc/sv/iwd /var/service/
-  ln -s /etc/sv/chronyd /var/service/
-  ln -s /etc/sv/crond /var/service/
-  ln -s /etc/sv/dbus /var/service/
-  ln -s /etc/sv/acpid /var/service/
-  ln -s /etc/sv/elogind /var/service/
-  ln -s /etc/sv/polkitd /var/service/
+  ln -s /etc/sv/dhcpcd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/iwd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/chronyd /etc/runit/runsvdir/default/
+  ln -s /etc/sv/crond /etc/runit/runsvdir/default/
+  ln -s /etc/sv/dbus /etc/runit/runsvdir/default/
+  ln -s /etc/sv/acpid /etc/runit/runsvdir/default/
+  ln -s /etc/sv/elogind /etc/runit/runsvdir/default/
+  ln -s /etc/sv/polkitd /etc/runit/runsvdir/default/
   
 
   # Symlink for the timezone.
