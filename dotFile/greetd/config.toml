@@ -1,0 +1,32 @@
+# Which virtual terminal (tty) to run greetd on
+[terminal]
+vt = 1
+
+# The default session to run (tuigreet in this case)
+[default_session]
+# Command to launch tuigreet with options:
+# --time: Show current time
+# --asterisks: Hide password input with asterisks
+# --border: Draw a border around the login box
+# --cmd-session: Enable session selection from .desktop files
+# --sessions: Directories to search for session files
+# --power-shutdown: Command for shutdown op tion
+# --power-reboot: Command for reboot option
+# --power-suspend: Command for suspend option
+# --power-hibernate: Command for hibernate option
+# --user-menu: Allow user selection
+command = """
+tuigreet
+  --time
+  --asterisks
+  --border
+  --cmd-session
+  --sessions /usr/share/wayland-sessions:/etc/greetd/sessions
+  --power-shutdown 'poweroff'
+  --power-reboot 'reboot'
+#  --power-suspend 'loginctl suspend'
+#  --power-hibernate 'loginctl hibernate'
+#  --user-menu
+"""
+# User to run the greeter as (should be a non-privileged user, often 'greeter')
+user = "greeter"
