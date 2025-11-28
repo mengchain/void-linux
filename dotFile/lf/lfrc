@@ -1,0 +1,545 @@
+# ========================================================================
+# lf File Manager Configuration - Windows Explorer Style
+# ========================================================================
+# 
+# This configuration provides:
+# - Windows Explorer-like two-pane layout (directory tree + file list)
+# - Windows Explorer keyboard shortcuts and commands
+# - Detailed file information (name, date, type, size)
+# - handlr integration for all file associations
+# - Best practices following official lf documentation
+#
+# Official lf documentation: https://github.com/gokcehan/lf
+# ========================================================================
+
+# ========================================================================
+# BASIC DISPLAY SETTINGS
+# ========================================================================
+
+# Two-pane layout: directory tree (left) : file listing (right)
+# Ratio 1:3 gives more space for detailed file information
+set ratios 1:3
+
+# Disable preview pane to focus on two-pane Windows Explorer layout
+set preview false
+
+# Visual enhancements
+set drawbox true          # Draw borders around panes
+set icons true           # Show file type icons
+set colors true          # Enable colorization
+set dircounts true       # Show item count in directories
+set hidden false         # Hide hidden files by default (toggle with Ctrl+H)
+
+# File information display (Windows Explorer Details view)
+# Shows: filename | size | last modified | file type
+set info size:time
+
+# Display formatting
+set infosize 25          # Width allocated for info column
+set tabstop 4            # Tab width for alignment
+set scrolloff 5          # Keep 5 lines visible when scrolling
+set findlen 2            # Minimum characters for search
+
+# Performance settings
+set period 1             # Refresh interval (seconds)
+set mouse true          # Enable mouse support
+
+# ========================================================================
+# FILE OPENING AND ASSOCIATIONS
+# ========================================================================
+
+# Primary file opening command using handlr for all file associations
+# Follows Windows Explorer behavior: Enter opens files/folders
+cmd open ${{
+    # Handle directories - navigate into them
+    if [ -d "$f" ]; then
+        lf -remote "send $id cd \"$f\""
+        exit 0
+    fi
+    
+    # Handle all files with handlr (Windows-like file associations)
+    if command -v handlr >/dev/null 2>&1; then
+        handlr open "$f" >/dev/null 2>&1 &
+        lf -remote "send $id echo 'Opening: $(basename "$f")'"
+    else
+        # Fallback error if handlr not available
+        lf -remote "send $id echo 'Error: handlr not found. Install handlr for file associations.'"
+    fi
+}}
+
+# Alternative application launcher (like Windows "Open with...")
+cmd open-with %{{
+    printf "Open with: "
+    read -r app
+    
+    if [ -z "$app" ]; then
+        lf -remote "send $id echo 'Cancelled'"
+        exit 0
+    fi
+    
+    if command -v "$app" >/dev/null 2>&1; then
+        "$app" "$f" >/dev/null 2>&1 &
+        lf -remote "send $id echo 'Opening with: $app'"
+    else
+        lf -remote "send $id echo 'Command not found: $app'"
+    fi
+}}
+
+# Text editor for files that should be edited rather than opened
+cmd edit ${{
+    case $(file --mime-type -b "$f" 2>/dev/null) in
+        text/*|application/json|application/xml|application/javascript|*/xml)
+            ${EDITOR:-nano} "$f"
+            ;;
+        *)
+            lf -remote "send $id echo 'Not a text file: $(basename "$f")'"
+            ;;
+    esac
+}}
+
+# ========================================================================
+# WINDOWS EXPLORER KEYBOARD SHORTCUTS
+# ========================================================================
+
+# Core navigation (Windows Explorer style)
+map <enter> open                # Enter: Open file/folder
+map <backspace2> updir         # Backspace: Go to parent directory  
+map <left> updir               # Left Arrow: Go up one level
+map <right> open               # Right Arrow: Open selected item
+map <up> up                    # Up Arrow: Move selection up
+map <down> down                # Down Arrow: Move selection down
+
+# File operations (Windows shortcuts)
+map <delete> delete            # Delete: Delete selected files
+map <f-2> rename              # F2: Rename file/folder
+map <f-5> reload              # F5: Refresh/reload current directory
+map <c-c> copy                # Ctrl+C: Copy files
+map <c-x> cut                 # Ctrl+X: Cut files  
+map <c-v> paste               # Ctrl+V: Paste files
+map <c-a> select-all          # Ctrl+A: Select all files
+map <c-z> undo                # Ctrl+Z: Undo last operation
+map <esc> unselect            # Escape: Clear selection
+
+# Additional shortcuts
+map <c-n> mkdir               # Ctrl+N: New folder
+map <c-t> touch               # Ctrl+T: New file
+map <c-f> find                # Ctrl+F: Find/search files
+map <c-h> toggle-hidden       # Ctrl+H: Toggle hidden files
+map <alt-enter> properties    # Alt+Enter: File properties
+
+# Alternative file operations
+map e edit                    # E: Edit text files
+map o open-with              # O: Open with specific application
+
+# ========================================================================
+# QUICK ACCESS BOOKMARKS (Windows Explorer style)
+# ========================================================================
+
+# Quick navigation to common directories (like Windows Quick Access)
+map gh cd ~                   # Home directory
+map gd cd ~/Documents        # Documents
+map gD cd ~/Downloads        # Downloads  
+map gp cd ~/Pictures         # Pictures
+map gv cd ~/Videos           # Videos
+map gm cd ~/Music            # Music
+map gc cd ~/.config          # Configuration
+map gl cd ~/.local           # Local user files
+map gt cd /tmp               # Temporary files
+map gr cd /                  # Root directory
+
+# ========================================================================
+# VIEW AND SORTING OPTIONS
+# ========================================================================
+
+# View options (like Windows Explorer View menu)
+cmd cycle-info ${{
+    case "$lf_info" in
+        "") lf -remote "send $id set info size" ;;
+        "size") lf -remote "send $id set info time" ;;
+        "time") lf -remote "send $id set info size:time" ;;
+        "size:time") lf -remote "send $id set info size:time:type" ;;
+        *) lf -remote "send $id set info ''" ;;
+    esac
+    lf -remote "send $id echo 'View mode: $lf_info'"
+}}
+map <f-4> cycle-info         # F4: Cycle through view modes
+
+# Sorting options (Windows Explorer sorting)
+cmd sort-name :set sortby name; echo 'Sorted by: Name'
+cmd sort-time :set sortby time; echo 'Sorted by: Date Modified'  
+cmd sort-size :set sortby size; echo 'Sorted by: Size'
+cmd sort-ext :set sortby ext; echo 'Sorted by: Type'
+
+map sn sort-name             # Sort by name
+map st sort-time             # Sort by date modified
+map ss sort-size             # Sort by size  
+map se sort-ext              # Sort by file extension/type
+
+# ========================================================================
+# FILE OPERATIONS WITH ERROR HANDLING
+# ========================================================================
+
+# Delete files with confirmation (Windows-style)
+cmd delete ${{
+    set -f
+    printf "Delete selected files? [y/N]: "
+    read -r ans
+    case "$ans" in
+        [Yy]*) 
+            if [ -n "$fx" ]; then
+                rm -rf -- $fx
+                lf -remote "send $id echo 'Files deleted'"
+            else
+                lf -remote "send $id echo 'No files selected'"
+            fi
+            ;;
+        *)
+            lf -remote "send $id echo 'Delete cancelled'"
+            ;;
+    esac
+}}
+
+# Rename file/folder (F2 functionality)
+cmd rename ${{
+    if [ ! -e "$f" ]; then
+        lf -remote "send $id echo 'File not found: $f'"
+        exit 1
+    fi
+    
+    printf "Rename '$(basename "$f")' to: "
+    read -r newname
+    
+    if [ -z "$newname" ]; then
+        lf -remote "send $id echo 'Rename cancelled'"
+        exit 1
+    fi
+    
+    if [ -e "$newname" ]; then
+        lf -remote "send $id echo 'Error: File already exists: $newname'"
+        exit 1
+    fi
+    
+    if mv "$f" "$newname"; then
+        lf -remote "send $id echo 'Renamed to: $newname'"
+        lf -remote "send $id select \"$newname\""
+    else
+        lf -remote "send $id echo 'Rename failed'"
+    fi
+}}
+
+# Create new folder (Ctrl+N)
+cmd mkdir ${{
+    printf "New folder name: "
+    read -r dirname
+    
+    if [ -z "$dirname" ]; then
+        lf -remote "send $id echo 'Cancelled'"
+        exit 1
+    fi
+    
+    if [ -e "$dirname" ]; then
+        lf -remote "send $id echo 'Error: Already exists: $dirname'"
+        exit 1
+    fi
+    
+    if mkdir -p "$dirname"; then
+        lf -remote "send $id echo 'Created folder: $dirname'"
+        lf -remote "send $id select \"$dirname\""
+    else
+        lf -remote "send $id echo 'Failed to create folder'"
+    fi
+}}
+
+# Create new file (Ctrl+T)  
+cmd touch ${{
+    printf "New file name: "
+    read -r filename
+    
+    if [ -z "$filename" ]; then
+        lf -remote "send $id echo 'Cancelled'"
+        exit 1
+    fi
+    
+    if [ -e "$filename" ]; then
+        lf -remote "send $id echo 'Error: File already exists: $filename'"
+        exit 1
+    fi
+    
+    if touch "$filename"; then
+        lf -remote "send $id echo 'Created file: $filename'"
+        lf -remote "send $id select \"$filename\""
+    else
+        lf -remote "send $id echo 'Failed to create file'"
+    fi
+}}
+
+# ========================================================================
+# SEARCH AND FIND FUNCTIONALITY
+# ========================================================================
+
+# Find files (Ctrl+F - like Windows Explorer search)
+cmd find ${{
+    printf "Search for: "
+    read -r pattern
+    
+    if [ -z "$pattern" ]; then
+        lf -remote "send $id echo 'Search cancelled'"
+        exit 0
+    fi
+    
+    echo "Searching for: $pattern"
+    echo "Results:"
+    find . -iname "*$pattern*" -type f 2>/dev/null | head -20
+    echo ""
+    printf "Press Enter to continue..."
+    read -r
+}}
+
+# ========================================================================
+# ADDRESS BAR FUNCTIONALITY (Windows Explorer Style)
+# ========================================================================
+
+# Enhanced address bar with path validation and shortcuts
+cmd address-bar %{{
+    current_dir="$PWD"
+    printf "Navigate to [$current_dir]: "
+    read -r new_dir
+    
+    if [ -z "$new_dir" ]; then
+        lf -remote "send $id echo 'Staying in current directory'"
+        exit 0
+    fi
+    
+    # Handle shortcuts and path expansion
+    case "$new_dir" in
+        "~") new_dir="$HOME" ;;
+        "~/"*) new_dir="$HOME/${new_dir#~/}" ;;
+        ".") new_dir="$PWD" ;;
+        "..") new_dir="$(dirname "$PWD")" ;;
+        "../"*) new_dir="$(dirname "$PWD")/${new_dir#../}" ;;
+        "/"*) ;;  # Absolute path, keep as is
+        *) new_dir="$PWD/$new_dir" ;;  # Relative path
+    esac
+    
+    if [ -d "$new_dir" ]; then
+        lf -remote "send $id cd \"$new_dir\""
+        lf -remote "send $id echo 'Navigated to: $new_dir'"
+    else
+        lf -remote "send $id echo 'Directory not found: $new_dir'"
+    fi
+}}
+
+# Windows Explorer address bar shortcuts
+map <c-l> address-bar          # Ctrl+L: Address bar (Windows standard)
+map <f-6> address-bar          # F6: Address bar (Windows Explorer)
+
+# ========================================================================
+# TOGGLE FEATURES
+# ========================================================================
+
+# Toggle hidden files (Ctrl+H)
+cmd toggle-hidden ${{
+    if [ "$lf_hidden" = "true" ]; then
+        lf -remote "send $id set hidden false"
+        lf -remote "send $id echo 'Hidden files: disabled'"
+    else
+        lf -remote "send $id set hidden true" 
+        lf -remote "send $id echo 'Hidden files: enabled'"
+    fi
+}}
+
+# ========================================================================
+# CLIPBOARD OPERATIONS (Wayland)
+# ========================================================================
+
+# Copy file path to clipboard (Ctrl+Shift+C)
+cmd copy-path ${{
+    if command -v wl-copy >/dev/null 2>&1; then
+        printf '%s' "$fx" | wl-copy
+        lf -remote "send $id echo 'Path copied to clipboard'"
+    else
+        lf -remote "send $id echo 'Error: wl-copy not found'"
+    fi
+}}
+map <c-shift-c> copy-path
+
+# ========================================================================
+# ARCHIVE OPERATIONS
+# ========================================================================
+
+# Extract archives (supports multiple formats)
+cmd extract ${{
+    set -f
+    case "$f" in
+        *.tar.bz2|*.tbz2) tar -xjf "$f" ;;
+        *.tar.gz|*.tgz) tar -xzf "$f" ;;
+        *.tar.xz|*.txz) tar -xJf "$f" ;;
+        *.tar) tar -xf "$f" ;;
+        *.zip) unzip "$f" ;;
+        *.rar) unrar x "$f" ;;
+        *.7z) 7z x "$f" ;;
+        *) 
+            lf -remote "send $id echo 'Unknown archive format: $(basename "$f")'"
+            exit 1
+            ;;
+    esac
+    
+    if [ $? -eq 0 ]; then
+        lf -remote "send $id echo 'Extracted: $(basename "$f")'"
+    else
+        lf -remote "send $id echo 'Extraction failed'"
+    fi
+}}
+map <c-e> extract            # Ctrl+E: Extract archive
+
+# ========================================================================
+# FILE PROPERTIES (Alt+Enter - Windows style)
+# ========================================================================
+
+# Comprehensive file properties dialog
+cmd properties ${{
+    clear
+    echo "File Properties - $(basename "$f")"
+    echo "=============================================="
+    
+    if [ ! -e "$f" ]; then
+        echo "Error: File not found: $f"
+        printf "Press Enter to continue..."
+        read -r
+        exit 1
+    fi
+    
+    # Basic information
+    echo "Name:         $(basename "$f")"
+    echo "Location:     $(dirname "$f")"
+    echo "Type:         $(if [ -d "$f" ]; then echo "Directory"; elif [ -L "$f" ]; then echo "Symbolic Link"; else echo "File"; fi)"
+    
+    # File size
+    if [ -f "$f" ]; then
+        size_bytes=$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null)
+        size_human=$(du -h "$f" 2>/dev/null | cut -f1)
+        echo "Size:         $size_human ($size_bytes bytes)"
+    elif [ -d "$f" ]; then
+        dir_size=$(du -sh "$f" 2>/dev/null | cut -f1)
+        echo "Size:         $dir_size (directory)"
+    fi
+    
+    # Timestamps (YYYY/MM/DD format as requested)
+    echo ""
+    echo "Timestamps:"
+    echo "-----------"
+    if command -v stat >/dev/null 2>&1; then
+        # Linux (GNU stat)
+        if stat -c %Y "$f" >/dev/null 2>&1; then
+            modified_date=$(stat -c %Y "$f" | xargs -I {} date -d @{} '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+            accessed_date=$(stat -c %X "$f" | xargs -I {} date -d @{} '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+            echo "Modified:     $modified_date"
+            echo "Accessed:     $accessed_date"
+        # BSD/macOS stat (fallback)  
+        elif stat -f %m "$f" >/dev/null 2>&1; then
+            modified_date=$(date -r "$(stat -f %m "$f")" '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+            accessed_date=$(date -r "$(stat -f %a "$f")" '+%Y/%m/%d %H:%M:%S' 2>/dev/null)
+            echo "Modified:     $modified_date"
+            echo "Accessed:     $accessed_date"
+        fi
+    fi
+    
+    # File type and associations
+    echo ""
+    echo "File Type Information:"
+    echo "----------------------"
+    if command -v file >/dev/null 2>&1; then
+        mime_type=$(file --mime-type -b "$f" 2>/dev/null)
+        file_type=$(file -b "$f" 2>/dev/null)
+        echo "MIME Type:    $mime_type"
+        echo "Description:  $file_type"
+        
+        # Show handlr association
+        if command -v handlr >/dev/null 2>&1 && [ -n "$mime_type" ]; then
+            association=$(handlr get "$mime_type" 2>/dev/null)
+            if [ -n "$association" ]; then
+                echo "Opens with:   $association"
+            else
+                echo "Opens with:   (no association)"
+            fi
+        fi
+    fi
+    
+    # Permissions
+    echo ""
+    echo "Permissions:"
+    echo "------------"
+    if command -v stat >/dev/null 2>&1; then
+        if stat -c %a "$f" >/dev/null 2>&1; then
+            # Linux
+            perms_octal=$(stat -c %a "$f")
+            perms_symbolic=$(stat -c %A "$f")
+            owner=$(stat -c %U "$f" 2>/dev/null || stat -c %u "$f")
+            group=$(stat -c %G "$f" 2>/dev/null || stat -c %g "$f")
+        elif stat -f %Mp%Lp "$f" >/dev/null 2>&1; then
+            # BSD/macOS  
+            perms_octal=$(stat -f %Mp%Lp "$f")
+            perms_symbolic=$(ls -ld "$f" | cut -c1-10)
+            owner=$(stat -f %Su "$f" 2>/dev/null || stat -f %u "$f")
+            group=$(stat -f %Sg "$f" 2>/dev/null || stat -f %g "$f")
+        fi
+        echo "Mode:         $perms_symbolic ($perms_octal)"
+        echo "Owner:        $owner:$group"
+    fi
+    
+    echo ""
+    echo "=============================================="
+    printf "Press Enter to continue..."
+    read -r
+}}
+
+# ========================================================================
+# STARTUP MESSAGES AND HELP
+# ========================================================================
+
+# Optional: Show help on startup (comment out if not wanted)
+# cmd startup ${{
+#     lf -remote "send $id echo 'lf Windows Explorer Style - Press ? for help'"
+# }}
+
+# Help command
+cmd help ${{
+    clear
+    echo "lf File Manager - Windows Explorer Style"
+    echo "========================================"
+    echo ""
+    echo "Navigation:"
+    echo "  Enter          Open file/folder"
+    echo "  Backspace      Go to parent directory"
+    echo "  Arrow Keys     Navigate"
+    echo ""
+    echo "File Operations:"
+    echo "  Ctrl+C         Copy"
+    echo "  Ctrl+X         Cut"  
+    echo "  Ctrl+V         Paste"
+    echo "  Ctrl+A         Select all"
+    echo "  Delete         Delete files"
+    echo "  F2             Rename"
+    echo "  F5             Refresh"
+    echo ""
+    echo "Other:"
+    echo "  Ctrl+N         New folder"
+    echo "  Ctrl+T         New file"
+    echo "  Ctrl+F         Find files"
+    echo "  Ctrl+H         Toggle hidden files"
+    echo "  Alt+Enter      Properties"
+    echo "  Ctrl+E         Extract archive"
+    echo ""
+    echo "Quick Access (g+key):"
+    echo "  gh    Home     gd    Documents    gD    Downloads"
+    echo "  gp    Pictures gv    Videos      gm    Music"
+    echo ""
+    printf "Press Enter to continue..."
+    read -r
+}}
+map <f-1> help               # F1: Show help
+
+# ========================================================================
+# END OF CONFIGURATION
+# ========================================================================
+
