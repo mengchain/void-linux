@@ -16,16 +16,16 @@
 set -euo pipefail
 
 # Local script variables
-local readonly SCRIPT_NAME="xbps-wayland"
-local readonly SCRIPT_VERSION="1.0.0"
-local readonly DEPENDENCY_CHECKER="check_x11_deps.sh"
+SCRIPT_NAME="xbps-wayland"
+SCRIPT_VERSION="1.0.0"
+DEPENDENCY_CHECKER="check_x11_deps.sh"
 
 # Colors for output (local to this script)
-local readonly RED='\033[0;31m'
-local readonly GREEN='\033[0;32m'
-local readonly YELLOW='\033[1;33m'
-local readonly BLUE='\033[0;34m'
-local readonly NC='\033[0m' # No Color
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
 # Function to print usage information
 usage() {
