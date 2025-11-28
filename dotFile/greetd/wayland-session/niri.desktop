@@ -1,4 +1,4 @@
 [Desktop Entry]
 Name=Niri
-Exec=niri
+Exec=niri.sh
 Type=Application
