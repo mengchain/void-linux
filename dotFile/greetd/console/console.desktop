@@ -1,4 +1,4 @@
 [Desktop Entry]
 Name=Console
-Exec=tty
+Exec=/bin/sh --login
 Type=Application
