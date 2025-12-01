@@ -46,7 +46,7 @@ tuigreet
   --remember
   --remember-session
   --cmd-session
-  --sessions /usr/share/wayland-sessions:/etc/greetd/sessions
+  --sessions /usr/share/wayland-sessions:/usr/share/console-sessions
   --power-shutdown 'poweroff'
   --power-reboot 'reboot'
 #  --power-suspend 'loginctl suspend'
