@@ -1,4 +1,4 @@
 [Desktop Entry]
 Name=Console
-Exec=/bin/sh --login
+Exec=startConsole.sh
 Type=Application
