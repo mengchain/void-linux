@@ -1,0 +1,58 @@
+# ~/.config/mako/config
+
+# General appearance
+background-color=#23272eE6
+text-color=#ffffff
+border-color=#5e81ac
+border-size=2
+border-radius=12
+padding=16
+margin=16
+font=JetBrains Mono 12
+icons=1
+
+# Notification placement
+anchor=top-left
+
+# Default timeout (ms)
+default-timeout=3000
+
+# Modern look: rounded corners, padding, margin, subtle transparency
+
+# Volume notifications
+[app-name=volumeControl]
+background-color=#81a1c1E6
+text-color=#2e3440
+border-color=#5e81ac
+border-radius=16
+font-weight=bold
+
+# Brightness notifications
+[app-name=brightness-notify]
+background-color=#a3be8cE6
+text-color=#2e3440
+border-color=#8fbcbb
+border-radius=16
+font-weight=bold
+
+# Datetime notifications
+[app-name=displayTime]
+background-color=#b48eadE6
+text-color=#2e3440
+border-color=#b48ead
+border-radius=16
+font-weight=bold
+
+# Workspace notifications (for a second mako instance)
+[app-name=workspace]
+anchor=top-right
+background-color=#ebcb8bE6
+text-color=#2e3440
+border-color=#d08770
+border-radius=16
+font-weight=bold
+margin=16
+padding=16
+
+# Hide duplicate notifications
+ignore-timeout=1
