@@ -105,23 +105,23 @@ command = "exit"
 [[keybindings]]
 mods = ["Super"]
 key = "F12"
-command = "exec ~/.local/bin/volume-notify.sh up"
+command = "exec ~/.local/bin/volumeControl.sh up"
 
 [[keybindings]]
 mods = ["Super"]
 key = "F11"
-command = "exec ~/.local/bin/volume-notify.sh down"
+command = "exec ~/.local/bin/volumeControl.sh down"
 
 [[keybindings]]
 mods = ["Super"]
 key = "F10"
-command = "exec ~/.local/bin/volume-notify.sh toggle"
+command = "exec ~/.local/bin/volumeControl.sh toggle"
 
 # --- Date/time notification ---
 [[keybindings]]
 mods = ["Super"]
 key = "T"
-command = "exec ~/.local/bin/datetime-notify.sh"
+command = "exec ~/.local/bin/displayTime.sh"
 
 # --- Workspace notification (manual trigger) ---
 [[keybindings]]
