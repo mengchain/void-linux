@@ -130,6 +130,14 @@ partition () {
 zfs_passphrase () {
     # Generate key
     print "Set ZFS passphrase"
+    
+    # Secure directory creation
+    if [[ ! -d /etc/zfs ]]; then
+        mkdir -p /etc/zfs
+        chmod 700 /etc/zfs
+        chown root:root /etc/zfs
+    fi
+    
     while true; do
         read -r -p "> ZFS passphrase: " -s pass1
         echo
@@ -142,7 +150,8 @@ zfs_passphrase () {
                 continue
             fi
             echo "$pass1" > /etc/zfs/zroot.key
-            chmod 000 /etc/zfs/zroot.key
+            chmod 400 /etc/zfs/zroot.key
+            chown root:root /etc/zfs/zroot.key
             
             # Verify key file was created
             if [[ ! -f /etc/zfs/zroot.key ]] || [[ ! -s /etc/zfs/zroot.key ]]; then
@@ -159,14 +168,23 @@ zfs_passphrase () {
 zfs_passphrase_backup () {
     print 'Creating encryption key backup'
     mkdir -p /mnt/root/zfs-keys
+    chmod 700 /mnt/root/zfs-keys
+    chown root:root /mnt/root/zfs-keys
+    
+    # Save key location
     zfs get -H -o value keylocation zroot > /mnt/root/zfs-keys/keylocation
-    install -m 000 /etc/zfs/zroot.key /mnt/root/zfs-keys/
+    chmod 400 /mnt/root/zfs-keys/keylocation
+    
+    # Copy key with secure permissions
+    install -m 400 /etc/zfs/zroot.key /mnt/root/zfs-keys/
     
     # Verify backup
     if ! diff /etc/zfs/zroot.key /mnt/root/zfs-keys/zroot.key &>/dev/null; then
         echo "ERROR: Key backup verification failed!" >&2
         exit 1
     fi
+    
+    echo "✓ Key backup secured at /root/zfs-keys/"
 }    
 
 create_pool () {
