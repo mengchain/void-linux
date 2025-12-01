@@ -5,6 +5,26 @@
 [terminal]
 vt = 1
 
+#Recommended Directory Structure
+#/etc/greetd/
+#├── config.toml                    # Main greetd configuration
+#├── environments                   # Optional: custom environment file
+#└── sessions/                      # Optional: custom session scripts
+#    ├── niri-session
+#    └── console-session
+#
+#/usr/share/wayland-sessions/       # Standard location for Wayland sessions
+#├── niri.desktop
+#└── sway.desktop
+#
+#/usr/share/xsessions/              # Standard location for X11 sessions
+#└── i3.desktop
+#
+#/var/cache/tuigreet/               # tuigreet cache directory
+#└── cache.toml                     # Stores remember preferences
+#
+#/var/lib/greetd/                   # greetd state directory (auto-created)
+
 # The default session to run (tuigreet in this case)
 [default_session]
 # Command to launch tuigreet with options:
@@ -22,21 +42,17 @@ command = """
 tuigreet
   --time
   --asterisks
-  --border
+# --border
+  --remember
+  --remember-session
   --cmd-session
-  --sessions /usr/share/wayland-sessions:/etc/greetd/console-sessions
+  --sessions /usr/share/wayland-sessions:/etc/greetd/sessions
   --power-shutdown 'poweroff'
   --power-reboot 'reboot'
 #  --power-suspend 'loginctl suspend'
 #  --power-hibernate 'loginctl hibernate'
 #  --user-menu
 """
-# Source environment before starting session
-# Ensures proper environment variables are set
-source_profile = true
-
-# Run session in user's shell (respects user's login shell)
-run_in_shell = true
 
 # User to run the greeter as (should be a non-privileged user, often 'greeter')
 user = "greeter"
