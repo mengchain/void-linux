@@ -1,0 +1,84 @@
+#############################################
+# Theme: One Dark Pro
+# Author: Binaryify
+# Reference: https://github.com/Binaryify/OneDark-Pro
+#############################################
+
+[metadata]
+name=One Dark Pro
+author=Binaryify
+version=1.0
+url=https://github.com/Binaryify/OneDark-Pro
+
+[colors]
+# Background colors
+background=#282c34
+background-alt=#21252b
+background-lighter=#2c313c
+
+# Foreground colors
+foreground=#abb2bf
+foreground-alt=#5c6370
+
+# Cursor
+cursor=#528bff
+cursor-text=#282c34
+
+# Selection
+selection-bg=#3e4451
+selection-fg=#abb2bf
+
+# ANSI colors (0-15)
+# Black
+color0=#282c34
+color8=#5c6370
+
+# Red
+color1=#e06c75
+color9=#be5046
+
+# Green
+color2=#98c379
+color10=#98c379
+
+# Yellow
+color3=#e5c07b
+color11=#d19a66
+
+# Blue
+color4=#61afef
+color12=#61afef
+
+# Magenta
+color5=#c678dd
+color13=#c678dd
+
+# Cyan
+color6=#56b6c2
+color14=#56b6c2
+
+# White
+color7=#abb2bf
+color15=#ffffff
+
+# UI colors
+border=#3e4451
+active-border=#528bff
+inactive-border=#3e4451
+
+# Status colors
+success=#98c379
+warning=#e5c07b
+error=#e06c75
+info=#61afef
+
+# Additional semantic colors
+comment=#5c6370
+red=#e06c75
+orange=#d19a66
+yellow=#e5c07b
+green=#98c379
+cyan=#56b6c2
+blue=#61afef
+purple=#c678dd
+magenta=#c678dd
