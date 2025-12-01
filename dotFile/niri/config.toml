@@ -1,8 +1,3 @@
-# =========================
-# Niri Config (TOML) for Void Linux (Wayland)
-# Modern dark theme, gaps, borders, rounded corners, Windows-like shortcuts
-# =========================
-
 [theme]
 background = "#181825"
 border_active = "#f9e2af"
@@ -30,7 +25,7 @@ command = "waylock"
 # Keybindings (TOML)
 # =========================
 
-# --- Window management ---
+# --- Application Launching ---
 [[keybindings]]
 mods = ["Super"]
 key = "Return"
@@ -46,11 +41,18 @@ mods = ["Super"]
 key = "D"
 command = "spawn_launcher"
 
+# --- System Actions ---
 [[keybindings]]
 mods = ["Super"]
 key = "L"
 command = "lock"
 
+[[keybindings]]
+mods = ["Super", "Shift"]
+key = "Q"
+command = "exit"
+
+# --- Window Management ---
 [[keybindings]]
 mods = ["Super"]
 key = "W"
@@ -96,68 +98,51 @@ mods = ["Super"]
 key = "M"
 command = "minimize"
 
-[[keybindings]]
-mods = ["Super", "Shift"]
-key = "Q"
-command = "exit"
-
-# --- Volume control (Pipewire via wpctl & notification) ---
+# --- Workspace Management ---
 [[keybindings]]
 mods = ["Super"]
-key = "F12"
-command = "exec ~/.local/bin/volumeControl.sh up"
+key = "1"
+command = "switch_workspace 1"
 
 [[keybindings]]
 mods = ["Super"]
-key = "F11"
-command = "exec ~/.local/bin/volumeControl.sh down"
+key = "2"
+command = "switch_workspace 2"
 
 [[keybindings]]
 mods = ["Super"]
-key = "F10"
-command = "exec ~/.local/bin/volumeControl.sh toggle"
+key = "3"
+command = "switch_workspace 3"
 
-# --- Date/time notification ---
 [[keybindings]]
 mods = ["Super"]
-key = "T"
-command = "exec ~/.local/bin/displayTime.sh"
+key = "4"
+command = "switch_workspace 4"
 
-# --- Workspace notification (manual trigger) ---
 [[keybindings]]
 mods = ["Super"]
-key = "W"
-command = "exec ~/.local/bin/workspace-notify.sh"
-
-# --- Brightness control ---
-[[keybindings]]
-key = "XF86MonBrightnessUp"
-command = "exec brightnessctl set +10%"
+key = "5"
+command = "switch_workspace 5"
 
 [[keybindings]]
-key = "XF86MonBrightnessDown"
-command = "exec brightnessctl set 10%-"
-
-# --- Screenshot (grim + slurp) ---
-[[keybindings]]
-key = "Print"
-command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+mods = ["Super"]
+key = "6"
+command = "switch_workspace 6"
 
 [[keybindings]]
-mods = ["Super", "Shift"]
-key = "S"
-command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+mods = ["Super"]
+key = "7"
+command = "switch_workspace 7"
 
-# --- Workspace switching (Super+1..9) ---
-[[keybindings]]; mods = ["Super"]; key = "1"; command = "switch_workspace 1"
-[[keybindings]]; mods = ["Super"]; key = "2"; command = "switch_workspace 2"
-[[keybindings]]; mods = ["Super"]; key = "3"; command = "switch_workspace 3"
-[[keybindings]]; mods = ["Super"]; key = "4"; command = "switch_workspace 4"
-[[keybindings]]; mods = ["Super"]; key = "5"; command = "switch_workspace 5"
-[[keybindings]]; mods = ["Super"]; key = "6"; command = "switch_workspace 6"
-[[keybindings]]; mods = ["Super"]; key = "7"; command = "switch_workspace 7"
-[[keybindings]]; mods = ["Super"]; key = "8"; command = "switch_workspace 8"
-[[keybindings]]; mods = ["Super"]; key = "9"; command = "switch_workspace 9"
+[[keybindings]]
+mods = ["Super"]
+key = "8"
+command = "switch_workspace 8"
+
+[[keybindings]]
+mods = ["Super"]
+key = "9"
+command = "switch_workspace 9"
 
 [[keybindings]]
 mods = ["Super"]
@@ -173,3 +158,50 @@ command = "focus_workspace_down"
 mods = ["Super"]
 key = "O"
 command = "toggle_overview"
+
+# --- Volume Control (Pipewire via wpctl & notification) ---
+[[keybindings]]
+mods = ["Super"]
+key = "F12"
+command = "exec ~/.local/bin/volumeControl.sh up"
+
+[[keybindings]]
+mods = ["Super"]
+key = "F11"
+command = "exec ~/.local/bin/volumeControl.sh down"
+
+[[keybindings]]
+mods = ["Super"]
+key = "F10"
+command = "exec ~/.local/bin/volumeControl.sh toggle"
+
+# --- Brightness Control ---
+[[keybindings]]
+key = "XF86MonBrightnessUp"
+command = "exec brightnessctl set +10%"
+
+[[keybindings]]
+key = "XF86MonBrightnessDown"
+command = "exec brightnessctl set 10%-"
+
+# --- Date/Time Notification ---
+[[keybindings]]
+mods = ["Super"]
+key = "T"
+command = "exec ~/.local/bin/displayTime.sh"
+
+# --- Workspace Notification (Manual Trigger) ---
+[[keybindings]]
+mods = ["Super"]
+key = "W"
+command = "exec ~/.local/bin/workspace-notify.sh"
+
+# --- Screenshot (grim + slurp) ---
+[[keybindings]]
+key = "Print"
+command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+
+[[keybindings]]
+mods = ["Super", "Shift"]
+key = "S"
+command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
