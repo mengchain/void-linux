@@ -1,0 +1,89 @@
+#############################################
+# Theme: GitHub Dark
+# Author: GitHub Inc.
+# Reference: https://github.com/primer/github-vscode-theme
+#############################################
+
+[metadata]
+name=GitHub Dark
+author=GitHub Inc.
+version=1.0
+url=https://github.com/primer/github-vscode-theme
+
+[colors]
+# Background colors
+background=#0d1117
+background-alt=#161b22
+background-lighter=#21262d
+
+# Foreground colors
+foreground=#c9d1d9
+foreground-alt=#8b949e
+
+# Cursor
+cursor=#58a6ff
+cursor-text=#0d1117
+
+# Selection
+selection-bg=#1f6feb
+selection-fg=#ffffff
+
+# ANSI colors (0-15)
+# Black
+color0=#484f58
+color8=#6e7681
+
+# Red
+color1=#ff7b72
+color9=#ffa198
+
+# Green
+color2=#3fb950
+color10=#56d364
+
+# Yellow
+color3=#d29922
+color11=#e3b341
+
+# Blue
+color4=#58a6ff
+color12=#79c0ff
+
+# Magenta
+color5=#bc8cff
+color13=#d2a8ff
+
+# Cyan
+color6=#39c5cf
+color14=#56d4dd
+
+# White
+color7=#b1bac4
+color15=#f0f6fc
+
+# UI colors
+border=#30363d
+active-border=#58a6ff
+inactive-border=#21262d
+
+# Status colors
+success=#3fb950
+warning=#d29922
+error=#f85149
+info=#58a6ff
+
+# Additional semantic colors
+comment=#8b949e
+red=#ff7b72
+orange=#ffa657
+yellow=#d29922
+green=#3fb950
+cyan=#76e3ea
+blue=#58a6ff
+purple=#bc8cff
+magenta=#bc8cff
+
+# GitHub-specific colors
+link=#58a6ff
+subtle=#6e7681
+muted=#8b949e

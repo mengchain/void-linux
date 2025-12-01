@@ -1,0 +1,91 @@
+#############################################
+# Theme: Minimal Kiwi
+# Author: Community
+# A minimal, fresh green-themed colorscheme
+#############################################
+
+[metadata]
+name=Minimal Kiwi
+author=Community
+version=1.0
+description=Fresh minimal theme with kiwi green accents
+
+[colors]
+# Background colors (soft dark grays)
+background=#1a1d1e
+background-alt=#232628
+background-lighter=#2d3032
+
+# Foreground colors (soft whites/grays)
+foreground=#d4d4d4
+foreground-alt=#7f8c8d
+
+# Cursor (kiwi green)
+cursor=#a6e22e
+cursor-text=#1a1d1e
+
+# Selection
+selection-bg=#3e4446
+selection-fg=#d4d4d4
+
+# ANSI colors (0-15)
+# Black (dark grays)
+color0=#1a1d1e
+color8=#7f8c8d
+
+# Red (muted red)
+color1=#e74c3c
+color9=#f06e5e
+
+# Green (kiwi green - main accent)
+color2=#a6e22e
+color10=#b8f23e
+
+# Yellow (soft golden)
+color3=#f1c40f
+color11=#ffd42a
+
+# Blue (soft blue)
+color4=#66d9ef
+color12=#7ce5ff
+
+# Magenta (soft purple)
+color5=#ae81ff
+color13=#c49eff
+
+# Cyan (mint)
+color6=#2ecc71
+color14=#3fe68b
+
+# White (light grays)
+color7=#d4d4d4
+color15=#ffffff
+
+# UI colors
+border=#3e4446
+active-border=#a6e22e
+inactive-border=#2d3032
+
+# Status colors
+success=#a6e22e
+warning=#f1c40f
+error=#e74c3c
+info=#66d9ef
+
+# Additional semantic colors
+comment=#7f8c8d
+red=#e74c3c
+orange=#e67e22
+yellow=#f1c40f
+green=#a6e22e
+cyan=#2ecc71
+blue=#66d9ef
+purple=#ae81ff
+magenta=#ae81ff
+
+# Kiwi-specific accent colors
+kiwi-green=#a6e22e
+kiwi-dark=#8ec621
+kiwi-light=#c6f553
+mint=#2ecc71
+lime=#b8f23e

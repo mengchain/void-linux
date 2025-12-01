@@ -1,0 +1,92 @@
+#############################################
+# Theme: Monokai Pro
+# Author: Monokai (Wimer Hazenberg)
+# Reference: https://monokai.pro
+#############################################
+
+[metadata]
+name=Monokai Pro
+author=Monokai (Wimer Hazenberg)
+version=1.0
+url=https://monokai.pro
+description=Professional color scheme with rich, vibrant colors
+
+[colors]
+# Background colors (dark charcoal)
+background=#2d2a2e
+background-alt=#221f22
+background-lighter=#403e41
+
+# Foreground colors
+foreground=#fcfcfa
+foreground-alt=#939293
+
+# Cursor
+cursor=#fcfcfa
+cursor-text=#2d2a2e
+
+# Selection
+selection-bg=#5b595c
+selection-fg=#fcfcfa
+
+# ANSI colors (0-15)
+# Black
+color0=#2d2a2e
+color8=#727072
+
+# Red
+color1=#ff6188
+color9=#ff6188
+
+# Green
+color2=#a9dc76
+color10=#a9dc76
+
+# Yellow
+color3=#ffd866
+color11=#ffd866
+
+# Blue
+color4=#fc9867
+color12=#fc9867
+
+# Magenta
+color5=#ab9df2
+color13=#ab9df2
+
+# Cyan
+color6=#78dce8
+color14=#78dce8
+
+# White
+color7=#fcfcfa
+color15=#fcfcfa
+
+# UI colors
+border=#5b595c
+active-border=#fc9867
+inactive-border=#403e41
+
+# Status colors
+success=#a9dc76
+warning=#ffd866
+error=#ff6188
+info=#78dce8
+
+# Additional semantic colors
+comment=#727072
+red=#ff6188
+orange=#fc9867
+yellow=#ffd866
+green=#a9dc76
+cyan=#78dce8
+blue=#78dce8
+purple=#ab9df2
+magenta=#ab9df2
+
+# Monokai Pro specific colors
+pink=#ff6188
+lime=#a9dc76
+peach=#fc9867
+lavender=#ab9df2
+sky=#78dce8

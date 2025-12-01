@@ -1,0 +1,85 @@
+#############################################
+# Theme: Monokai Pro (Machine Filter)
+# Author: Monokai (Wimer Hazenberg)
+# Reference: https://monokai.pro
+#############################################
+
+[metadata]
+name=Monokai Pro Machine
+author=Monokai (Wimer Hazenberg)
+version=1.0
+url=https://monokai.pro
+description=Monokai Pro with machine color filter (cooler tones)
+
+[colors]
+# Background colors
+background=#273136
+background-alt=#1d2528
+background-lighter=#3a4449
+
+# Foreground colors
+foreground=#f2fffc
+foreground-alt=#7f8c98
+
+# Cursor
+cursor=#f2fffc
+cursor-text=#273136
+
+# Selection
+selection-bg=#3d4752
+selection-fg=#f2fffc
+
+# ANSI colors (0-15)
+# Black
+color0=#273136
+color8=#6b7678
+
+# Red
+color1=#ff6d7e
+color9=#ff6d7e
+
+# Green
+color2=#a2e57b
+color10=#a2e57b
+
+# Yellow
+color3=#ffed72
+color11=#ffed72
+
+# Blue
+color4=#ffb270
+color12=#ffb270
+
+# Magenta
+color5=#baa0f8
+color13=#baa0f8
+
+# Cyan
+color6=#7cd5f1
+color14=#7cd5f1
+
+# White
+color7=#f2fffc
+color15=#f2fffc
+
+# UI colors
+border=#3d4752
+active-border=#ffb270
+inactive-border=#3a4449
+
+# Status colors
+success=#a2e57b
+warning=#ffed72
+error=#ff6d7e
+info=#7cd5f1
+
+# Additional semantic colors
+comment=#6b7678
+red=#ff6d7e
+orange=#ffb270
+yellow=#ffed72
+green=#a2e57b
+cyan=#7cd5f1
+blue=#7cd5f1
+purple=#baa0f8
+magenta=#baa0f8
