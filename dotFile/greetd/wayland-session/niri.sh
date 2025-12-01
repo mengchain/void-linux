@@ -11,4 +11,4 @@ export XDG_CURRENT_DESKTOP=niri
 GDK_BACKEND=wayland
 
 # For OpenRC on Void Linux, use niri --session within dbus-run-session
-exec dbus-run-session niri --session
+exec niri --session
