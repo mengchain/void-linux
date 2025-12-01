@@ -1,0 +1,175 @@
+# =========================
+# Niri Config (TOML) for Void Linux (Wayland)
+# Modern dark theme, gaps, borders, rounded corners, Windows-like shortcuts
+# =========================
+
+[theme]
+background = "#181825"
+border_active = "#f9e2af"
+border_inactive = "#585b70"
+border_width = 3
+border_radius = 16
+gap = 12
+
+[window]
+highlight_active = true
+
+[launcher]
+command = "fuzzel"
+
+[terminal]
+command = "foot"
+
+[file_manager]
+command = "foot -e lf"
+
+[lock]
+command = "waylock"
+
+# =========================
+# Keybindings (TOML)
+# =========================
+
+# --- Window management ---
+[[keybindings]]
+mods = ["Super"]
+key = "Return"
+command = "spawn_terminal"
+
+[[keybindings]]
+mods = ["Super"]
+key = "E"
+command = "spawn_file_manager"
+
+[[keybindings]]
+mods = ["Super"]
+key = "D"
+command = "spawn_launcher"
+
+[[keybindings]]
+mods = ["Super"]
+key = "L"
+command = "lock"
+
+[[keybindings]]
+mods = ["Super"]
+key = "W"
+command = "close"
+
+[[keybindings]]
+mods = ["Super"]
+key = "Tab"
+command = "cycle_next"
+
+[[keybindings]]
+mods = ["Super", "Shift"]
+key = "Tab"
+command = "cycle_prev"
+
+[[keybindings]]
+mods = ["Super"]
+key = "Left"
+command = "move_focus_left"
+
+[[keybindings]]
+mods = ["Super"]
+key = "Right"
+command = "move_focus_right"
+
+[[keybindings]]
+mods = ["Super"]
+key = "Up"
+command = "move_focus_up"
+
+[[keybindings]]
+mods = ["Super"]
+key = "Down"
+command = "move_focus_down"
+
+[[keybindings]]
+mods = ["Super"]
+key = "F"
+command = "toggle_fullscreen"
+
+[[keybindings]]
+mods = ["Super"]
+key = "M"
+command = "minimize"
+
+[[keybindings]]
+mods = ["Super", "Shift"]
+key = "Q"
+command = "exit"
+
+# --- Volume control (Pipewire via wpctl & notification) ---
+[[keybindings]]
+mods = ["Super"]
+key = "F12"
+command = "exec ~/.local/bin/volume-notify.sh up"
+
+[[keybindings]]
+mods = ["Super"]
+key = "F11"
+command = "exec ~/.local/bin/volume-notify.sh down"
+
+[[keybindings]]
+mods = ["Super"]
+key = "F10"
+command = "exec ~/.local/bin/volume-notify.sh toggle"
+
+# --- Date/time notification ---
+[[keybindings]]
+mods = ["Super"]
+key = "T"
+command = "exec ~/.local/bin/datetime-notify.sh"
+
+# --- Workspace notification (manual trigger) ---
+[[keybindings]]
+mods = ["Super"]
+key = "W"
+command = "exec ~/.local/bin/workspace-notify.sh"
+
+# --- Brightness control ---
+[[keybindings]]
+key = "XF86MonBrightnessUp"
+command = "exec brightnessctl set +10%"
+
+[[keybindings]]
+key = "XF86MonBrightnessDown"
+command = "exec brightnessctl set 10%-"
+
+# --- Screenshot (grim + slurp) ---
+[[keybindings]]
+key = "Print"
+command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+
+[[keybindings]]
+mods = ["Super", "Shift"]
+key = "S"
+command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+
+# --- Workspace switching (Super+1..9) ---
+[[keybindings]]; mods = ["Super"]; key = "1"; command = "switch_workspace 1"
+[[keybindings]]; mods = ["Super"]; key = "2"; command = "switch_workspace 2"
+[[keybindings]]; mods = ["Super"]; key = "3"; command = "switch_workspace 3"
+[[keybindings]]; mods = ["Super"]; key = "4"; command = "switch_workspace 4"
+[[keybindings]]; mods = ["Super"]; key = "5"; command = "switch_workspace 5"
+[[keybindings]]; mods = ["Super"]; key = "6"; command = "switch_workspace 6"
+[[keybindings]]; mods = ["Super"]; key = "7"; command = "switch_workspace 7"
+[[keybindings]]; mods = ["Super"]; key = "8"; command = "switch_workspace 8"
+[[keybindings]]; mods = ["Super"]; key = "9"; command = "switch_workspace 9"
+
+[[keybindings]]
+mods = ["Super"]
+key = "I"
+command = "focus_workspace_up"
+
+[[keybindings]]
+mods = ["Super"]
+key = "U"
+command = "focus_workspace_down"
+
+[[keybindings]]
+mods = ["Super"]
+key = "O"
+command = "toggle_overview"
