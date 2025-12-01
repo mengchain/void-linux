@@ -20,7 +20,7 @@ default-timeout=3000
 # Modern look: rounded corners, padding, margin, subtle transparency
 
 # Volume notifications
-[app-name=volumeControl]
+[app-name=volume-notify]
 background-color=#81a1c1E6
 text-color=#2e3440
 border-color=#5e81ac
@@ -36,7 +36,7 @@ border-radius=16
 font-weight=bold
 
 # Datetime notifications
-[app-name=displayTime]
+[app-name=datetime-notify]
 background-color=#b48eadE6
 text-color=#2e3440
 border-color=#b48ead
@@ -44,7 +44,7 @@ border-radius=16
 font-weight=bold
 
 # Workspace notifications (for a second mako instance)
-[app-name=workspace]
+[app-name=workspace-notify]
 anchor=top-right
 background-color=#ebcb8bE6
 text-color=#2e3440
