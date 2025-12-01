@@ -194,7 +194,7 @@ command = "exec ~/.local/bin/displayTime.sh"
 [[keybindings]]
 mods = ["Super"]
 key = "W"
-command = "exec ~/.local/bin/workspace-notify.sh"
+command = "exec ~/.local/bin/niriWorkspace.sh"
 
 # --- Screenshot (grim + slurp) ---
 [[keybindings]]
