@@ -1,3 +1,6 @@
+# greetd configuration for Pure Wayland Void Linux
+# Reference: https://git.sr.ht/~kennylevinsen/greetd
+
 # Which virtual terminal (tty) to run greetd on
 [terminal]
 vt = 1
@@ -28,5 +31,12 @@ tuigreet
 #  --power-hibernate 'loginctl hibernate'
 #  --user-menu
 """
+# Source environment before starting session
+# Ensures proper environment variables are set
+source_profile = true
+
+# Run session in user's shell (respects user's login shell)
+run_in_shell = true
+
 # User to run the greeter as (should be a non-privileged user, often 'greeter')
 user = "greeter"
