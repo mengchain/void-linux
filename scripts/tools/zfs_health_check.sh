@@ -520,7 +520,7 @@ check_zfs_layout() {
             print_success "Swap dataset exists"
             
             # Check if swap is active
-            if swapon --show=NAME | grep -q "/dev/zvol/zroot/swap"; then
+            if swapon --show=NAME | grep -q "/dev/zd0"; then
                 print_success "ZFS swap is active"
             else
                 print_warning "ZFS swap exists but not active"
