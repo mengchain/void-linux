@@ -327,7 +327,7 @@ check_and_repair_zfsbootmenu() {
     local zbm_dracut_dir="/etc/zfsbootmenu/dracut.conf.d"
     local keymap_conf="$zbm_dracut_dir/keymap.conf"
     
-    if ! command -v zbm-builder.sh &> /dev/null; then
+    if ! command -v generate-zbm &> /dev/null; then
         print_warning "ZFSBootMenu not installed"
         zbm_issues=true
         
