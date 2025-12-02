@@ -217,14 +217,14 @@ check_and_repair_zfs_encryption_keys() {
     if [[ -f "$key_file" ]]; then
         # Check permissions
         perms=$(stat -c "%a" "$key_file")
-        if [[ "$perms" == "000" ]]; then
+        if [[ "$perms" == "400" ]]; then
             print_success "ZFS encryption key found with secure permissions"
         else
             print_warning "ZFS key permissions are not secure: $perms"
             key_issues=true
             
             if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Secure ZFS key permissions"; then
-                execute_repair "chmod 000 $key_file" "Setting secure permissions on ZFS key"
+                execute_repair "chmod 400 $key_file" "Setting secure permissions on ZFS key"
             fi
         fi
     else
