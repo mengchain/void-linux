@@ -686,7 +686,7 @@ EOF
 
 # Add swap entry if created
 if [[ -f /tmp/swap_created ]] && [[ "$(cat /tmp/swap_created)" == "true" ]]; then
-    echo "/dev/zvol/zroot/swap  none           swap    defaults,pri=100                 0      0" >> /mnt/etc/fstab
+    echo "/dev/zvol/zroot/swap  none           swap    discard,pri=100                 0      0" >> /mnt/etc/fstab
 fi
 
 # Set root password
