@@ -391,16 +391,9 @@ copy_zpool_cache () {
     # Set cachefile on pool BEFORE copying
     zpool set cachefile=/etc/zfs/zpool.cache zroot
     
-    # Verify property was set
-    local cachefile_value
-    cachefile_value=$(zpool get -H -o value cachefile zroot)
-    if [[ "$cachefile_value" != "/etc/zfs/zpool.cache" ]]; then
-        echo "ERROR: Failed to set cachefile property! Got: $cachefile_value" >&2
-        exit 1
-    fi
     
     # Wait for cache file to be written
-    sleep 2
+    sleep 5
     
     # Verify cache file exists and is not empty
     if [[ ! -s /etc/zfs/zpool.cache ]]; then
