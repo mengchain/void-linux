@@ -280,14 +280,14 @@ check_and_repair_dracut_initramfs() {
         print_warning "Initramfs missing for current kernel"
         needs_rebuild=true
     else
-        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zfs.ko"; then
+        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep "zfs.ko"; then
             print_warning "ZFS module not found in initramfs"
             needs_rebuild=true
         else
             print_success "ZFS module found in initramfs"
         fi
         
-        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zroot.key"; then
+        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep "zroot.key"; then
             print_warning "ZFS encryption key not found in initramfs"
             needs_rebuild=true
         else
