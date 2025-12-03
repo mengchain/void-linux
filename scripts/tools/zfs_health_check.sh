@@ -716,13 +716,15 @@ check_and_repair_boot_properties() {
     
     # Check cachefile property
     cachefile=$(zpool get -H -o value cachefile "$pool")
-    if [[ "$cachefile" == "-" ]]; then
-        print_warning "Cachefile property not set on pool $pool"
+    if [[ "$cachefile" == "none" ]]; then
+        print_warning "Cachefile is disabled on pool $pool"
         boot_issues=true
         
-        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Set cachefile property"; then
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Enable cachefile (set to default)"; then
             execute_repair "zpool set cachefile=/etc/zfs/zpool.cache $pool" "Setting cachefile property"
         fi
+    elif [[ "$cachefile" == "-" ]]; then
+        print_success "Cachefile using default location (/etc/zfs/zpool.cache)"
     else
         print_success "Cachefile property set: $cachefile"
     fi
