@@ -197,9 +197,34 @@ key = "W"
 command = "exec ~/.local/bin/niriWorkspace.sh"
 
 # --- Screenshot (grim + slurp) ---
-[[keybindings]]
+# Full screen → file
+[[binds]]
 key = "Print"
-command = "exec grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%s).png"
+action.spawn = ["sh", "-c", "grim ~/Pictures/Screenshots/$(date +'screenshot_%Y%m%d_%H%M%S.png')"]
+
+# Full screen → clipboard
+[[binds]]
+key = "Print"
+mods = ["Shift"]
+action.spawn = ["sh", "-c", "grim - | wl-copy"]
+
+# Select area → file
+[[binds]]
+key = "Print"
+mods = ["Mod"]
+action.spawn = ["sh", "-c", "grim -g \"$(slurp)\" ~/Pictures/Screenshots/$(date +'screenshot_%Y%m%d_%H%M%S.png')"]
+
+# Select area → clipboard (MOST USEFUL!)
+[[binds]]
+key = "Print"
+mods = ["Mod", "Shift"]
+action.spawn = ["sh", "-c", "grim -g \"$(slurp)\" - | wl-copy"]
+
+# Current window → clipboard
+[[binds]]
+key = "Print"
+mods = ["Mod", "Ctrl"]
+action.spawn = ["sh", "-c", "grim -g \"$(niri msg --json windows | jq -r '.[] | select(.is_focused) | .geometry | \\\"\\\\(.x),\\\\(.y) \\\\(.width)x\\\\(.height)\\\"\')\" - | wl-copy"]
 
 [[keybindings]]
 mods = ["Super", "Shift"]
