@@ -527,19 +527,30 @@ check_zfs_layout() {
         fi
         
         # Check swap dataset and repair if needed
-        if zfs list zroot/swap &>/dev/null; then
-            print_success "Swap dataset exists"
-            
-            # Check if swap is active
-            if swapon --show=NAME | grep -q "/dev/zd0"; then
-                print_success "ZFS swap is active"
-            else
-                print_warning "ZFS swap exists but not active"
-                if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Activate ZFS swap"; then
-                    execute_repair "swapon /dev/zvol/zroot/swap" "Activating ZFS swap"
-                fi
-            fi
-        fi
+		if zfs list zroot/swap &>/dev/null; then
+			print_success "Swap dataset exists"
+			
+			# Check if swap is active
+			local fstab_swap=$(awk '$3 == "swap" {print $1}' /etc/fstab 2>/dev/null)
+			local active_swap=$(swapon --show=NAME --noheadings 2>/dev/null)
+			
+			if [[ -n "$active_swap" ]]; then
+				# Resolve both paths to compare
+				local fstab_swap_resolved=$(readlink -f "$fstab_swap" 2>/dev/null)
+				local active_swap_resolved=$(readlink -f "$active_swap" 2>/dev/null)
+				
+				if [[ "$fstab_swap_resolved" == "$active_swap_resolved" ]]; then
+					print_success "ZFS swap is active and matches fstab ($fstab_swap -> $active_swap)"
+				else
+					print_success "ZFS swap is active as $active_swap"
+				fi
+			else
+				print_warning "ZFS swap exists but is not active"
+				if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Activate ZFS swap"; then
+					execute_repair "swapon ${fstab_swap:-/dev/zvol/zroot/swap}" "Activating ZFS swap"
+				fi
+			fi
+		fi
     else
         print_error "Pool 'zroot' not found - this may not be a system installed with voidZFSInstallRepo.sh"
     fi
