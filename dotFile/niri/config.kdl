@@ -50,7 +50,7 @@ output "eDP-1" {
 // ============================================================================
 layout {
     // Gaps between windows (modern look)
-    gaps 8
+    gaps 12
     
     // Center focused column
     center-focused-column "never"
@@ -71,8 +71,8 @@ layout {
         active-color "#FFD700"    // Yellow for active window
         inactive-color "#4A4A4A"  // Dull gray for inactive
         
-        // Gradient settings (optional)
-        // active-gradient from="#FFD700" to="#FFA500" angle=45
+        // Glowing effect with gradient(optional)
+        active-gradient from="#FFD700" to="#FFED4E" angle=45 in="oklch"
     }
     
     // Border configuration
@@ -81,8 +81,8 @@ layout {
         active-color "#FFD700"    // Yellow border for active
         inactive-color "#4A4A4A"  // Gray border for inactive
         
-        // Gradient option
-        // active-gradient from="#FFD700" to="#FFA500" angle=45
+        //  Glowing effect with gradient(optional)
+        active-gradient from="#FFD700" to="#FFA500" angle=135 in="oklch"
     }
     
     // Struts - reserve space for panels/bars
