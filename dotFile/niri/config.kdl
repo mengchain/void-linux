@@ -250,6 +250,22 @@ binds {
     Mod+Shift+Tab { focus-workspace-up; }
     
     // ========================================================================
+    // FLOATING WINDOW MANAGEMENT
+    // ========================================================================
+    
+    // Toggle floating mode
+    Mod+Shift+Space { toggle-window-floating; }
+    
+    // Center floating window
+    Mod+C { center-column; }
+    
+    // Move floating window (keyboard)
+    Mod+Ctrl+Left { move-window-left; }
+    Mod+Ctrl+Right { move-window-right; }
+    Mod+Ctrl+Up { move-window-up; }
+    Mod+Ctrl+Down { move-window-down; }
+
+    // ========================================================================
     // WINDOW SIZING
     // ========================================================================
     
