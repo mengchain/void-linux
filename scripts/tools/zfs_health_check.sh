@@ -144,7 +144,7 @@ check_and_repair_hostid() {
         needs_repair=true
     else
         # Validate hostid format (should be 8 hex chars)
-        hostid_content=$(xxd -p /etc/hostid 2>/dev/null | tr -d '\n' || echo "invalid")
+        hostid_content=$(hexdump -v -e '/1 "%02x"' /etc/hostid 2>/dev/null | tr -d '\n' || echo "invalid")
         if [[ ${#hostid_content} -eq 8 ]] && [[ "$hostid_content" =~ ^[0-9a-f]{8}$ ]]; then
             print_success "ZFS hostid file exists and is valid: $hostid_content"
         else
