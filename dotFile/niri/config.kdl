@@ -203,12 +203,18 @@ binds {
     // ========================================================================
     // SCREENSHOTS (Windows-like)
     // ========================================================================
-    
-    // Win+Shift+S: Screenshot selection (like Windows Snip)
-    Mod+Shift+S { spawn "grim" "-g" "$(slurp)" "-" "|" "wl-copy"; }
-    
+
     // Print Screen: Full screenshot
-    Print { spawn "grim" "-" "|" "wl-copy"; }
+    Print { spawn "sh" "-c" "grim - | wl-copy"; }
+
+    // Win+Shift+S: Screenshot selection (like Windows Snip)
+    Mod+Shift+S { spawn "sh" "-c" "grim -g \"$(slurp)\" - | wl-copy"; }
+    
+    // Full screenshot to file
+    Shift+Print { spawn "sh" "-c" "grim ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
+
+    // Screenshot selection to file  
+    Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
     
     // Alt+Print: Screenshot active window
     Alt+Print { spawn "sh" "-c" "grim -g \"$(swaymsg -t get_tree | jq -r '.. | select(.focused?) | .rect | \"\\(.x),\\(.y) \\(.width)x\\(.height)\"')\" - | wl-copy"; }
