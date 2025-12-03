@@ -21,6 +21,7 @@ readonly LOG_FILE="/var/log/zfs_health_check.log"
 DRY_RUN=false
 AUTO_REPAIR=false
 FORCE_REPAIR=false
+FORCE_REBUILD=false  # New flag for forcing rebuilds
 
 log_message() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
@@ -70,7 +71,7 @@ confirm_repair() {
     local action="$1"
     local reply
     
-    if [[ "$FORCE_REPAIR" == true ]]; then
+    if [[ "$FORCE_REPAIR" == true ]] || [[ "$FORCE_REBUILD" == true ]]; then
         return 0
     fi
     
@@ -133,7 +134,7 @@ check_zfs_availability() {
     fi
 }
 
-# Check and fix ZFS hostid only if missing or corrupted
+# Check and fix ZFS hostid only if missing or corrupted (NEVER force)
 check_and_repair_hostid() {
     print_header "ZFS Host ID Check"
     local needs_repair=false
@@ -153,7 +154,9 @@ check_and_repair_hostid() {
         fi
     fi
     
+    # NEVER force hostid regeneration, even with --force-rebuild
     if [[ "$needs_repair" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
+        print_warning "Hostid regeneration requires manual confirmation (never forced)"
         if confirm_repair "Generate/repair ZFS hostid (WARNING: May affect pool imports)"; then
             execute_repair "zgenhostid" "Generating ZFS hostid"
         fi
@@ -258,7 +261,7 @@ check_and_repair_zfs_encryption_keys() {
     fi
 }
 
-# Check and repair dracut initramfs only if issues detected
+# Check and repair dracut initramfs only if issues detected OR force rebuild
 check_and_repair_dracut_initramfs() {
     print_header "Dracut Initramfs Check"
     local needs_rebuild=false
@@ -268,45 +271,51 @@ check_and_repair_dracut_initramfs() {
     local -a required_items=("zfs" "zroot.key")
     local item
     
-    # Check specific dracut config from installation
-    if [[ -f "$dracut_zfs_conf" ]]; then
-        print_success "Dracut ZFS configuration found"
+    # Force rebuild if requested
+    if [[ "$FORCE_REBUILD" == true ]]; then
+        print_warning "Force rebuild requested for initramfs"
+        needs_rebuild=true
+    else
+        # Check specific dracut config from installation
+        if [[ -f "$dracut_zfs_conf" ]]; then
+            print_success "Dracut ZFS configuration found"
+            
+            # Validate key components from voidZFSInstallRepo.sh
+            for item in "${required_items[@]}"; do
+                if grep -q "$item" "$dracut_zfs_conf"; then
+                    print_success "Dracut config includes: $item"
+                else
+                    print_warning "Dracut config missing: $item"
+                    needs_rebuild=true
+                fi
+            done
+        else
+            print_warning "Dracut ZFS configuration missing"
+            needs_rebuild=true
+        fi
         
-        # Validate key components from voidZFSInstallRepo.sh
-        for item in "${required_items[@]}"; do
-            if grep -q "$item" "$dracut_zfs_conf"; then
-                print_success "Dracut config includes: $item"
-            else
-                print_warning "Dracut config missing: $item"
+        # Check if initramfs exists and contains ZFS
+        if [[ ! -f "$initramfs_path" ]]; then
+            print_warning "Initramfs missing for current kernel"
+            needs_rebuild=true
+        else
+            if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zfs.ko"; then
+                print_warning "ZFS module not found in initramfs"
                 needs_rebuild=true
+            else
+                print_success "ZFS module found in initramfs"
             fi
-        done
-    else
-        print_warning "Dracut ZFS configuration missing"
-        needs_rebuild=true
-    fi
-    
-    # Check if initramfs exists and contains ZFS
-    if [[ ! -f "$initramfs_path" ]]; then
-        print_warning "Initramfs missing for current kernel"
-        needs_rebuild=true
-    else
-        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zfs.ko"; then
-            print_warning "ZFS module not found in initramfs"
-            needs_rebuild=true
-        else
-            print_success "ZFS module found in initramfs"
-        fi
-        
-        if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zroot.key"; then
-            print_warning "ZFS encryption key not found in initramfs"
-            needs_rebuild=true
-        else
-            print_success "ZFS encryption key found in initramfs"
+            
+            if ! lsinitrd "$initramfs_path" 2>/dev/null | grep -q "zroot.key"; then
+                print_warning "ZFS encryption key not found in initramfs"
+                needs_rebuild=true
+            else
+                print_success "ZFS encryption key found in initramfs"
+            fi
         fi
     fi
     
-    # Only rebuild if issues were found
+    # Only rebuild if issues were found or forced
     if [[ "$needs_rebuild" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
         if confirm_repair "Rebuild initramfs with ZFS support"; then
             # Recreate dracut config if missing
@@ -329,7 +338,7 @@ EOF" "Creating dracut ZFS configuration"
     fi
 }
 
-# Check and repair ZFSBootMenu only if issues found
+# Check and repair ZFSBootMenu only if issues found OR force rebuild
 check_and_repair_zfsbootmenu() {
     print_header "ZFSBootMenu Check"
     local zbm_issues=false
@@ -350,62 +359,68 @@ check_and_repair_zfsbootmenu() {
         print_success "ZFSBootMenu is installed"
     fi
     
-    # Check main ZBM configuration
-    if [[ -f "$zbm_config" ]]; then
-        # Check key settings from installation script
-        if grep -q "ImageDir: /boot/efi/EFI/ZBM" "$zbm_config" && \
-           grep -q "BootMountPoint: /boot/efi" "$zbm_config"; then
-            print_success "ZFSBootMenu configuration is correct"
+    # Force rebuild if requested
+    if [[ "$FORCE_REBUILD" == true ]]; then
+        print_warning "Force rebuild requested for ZFSBootMenu"
+        zbm_issues=true
+    else
+        # Check main ZBM configuration
+        if [[ -f "$zbm_config" ]]; then
+            # Check key settings from installation script
+            if grep -q "ImageDir: /boot/efi/EFI/ZBM" "$zbm_config" && \
+               grep -q "BootMountPoint: /boot/efi" "$zbm_config"; then
+                print_success "ZFSBootMenu configuration is correct"
+            else
+                print_warning "ZFSBootMenu configuration may be outdated"
+                zbm_issues=true
+            fi
         else
-            print_warning "ZFSBootMenu configuration may be outdated"
+            print_warning "ZFSBootMenu configuration missing"
             zbm_issues=true
         fi
-    else
-        print_warning "ZFSBootMenu configuration missing"
-        zbm_issues=true
-    fi
-    
-    # Check dracut configuration directory
-    if [[ ! -d "$zbm_dracut_dir" ]]; then
-        print_warning "ZFSBootMenu dracut config directory missing"
-        zbm_issues=true
-    else
-        print_success "ZFSBootMenu dracut directory exists"
-    fi
-    
-    # Check keymap config
-    if [[ ! -f "$keymap_conf" ]]; then
-        print_warning "ZFSBootMenu keymap configuration missing"
-        zbm_issues=true
-    else
-        print_success "ZFSBootMenu keymap configuration found"
-    fi
-    
-    # Check ESP directory and images
-    if [[ ! -d "$zbm_esp" ]]; then
-        print_warning "ZFSBootMenu ESP directory missing"
-        zbm_issues=true
-    else
-        print_success "ZFSBootMenu ESP directory exists"
-    fi
-    
-    # Check for ZBM EFI images
-    if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null; then
-        print_warning "ZFSBootMenu EFI images missing"
-        zbm_issues=true
-    else
-        print_success "ZFSBootMenu EFI images found"
         
-        # Check for backup image
-        if [[ -f "$zbm_esp/vmlinuz.efi" ]] && [[ ! -f "$zbm_esp/vmlinuz-backup.efi" ]]; then
-            print_warning "ZFSBootMenu backup image missing"
+        # Check dracut configuration directory
+        if [[ ! -d "$zbm_dracut_dir" ]]; then
+            print_warning "ZFSBootMenu dracut config directory missing"
             zbm_issues=true
         else
-            print_success "ZFSBootMenu backup image exists"
+            print_success "ZFSBootMenu dracut directory exists"
+        fi
+        
+        # Check keymap config
+        if [[ ! -f "$keymap_conf" ]]; then
+            print_warning "ZFSBootMenu keymap configuration missing"
+            zbm_issues=true
+        else
+            print_success "ZFSBootMenu keymap configuration found"
+        fi
+        
+        # Check ESP directory and images
+        if [[ ! -d "$zbm_esp" ]]; then
+            print_warning "ZFSBootMenu ESP directory missing"
+            zbm_issues=true
+        else
+            print_success "ZFSBootMenu ESP directory exists"
+        fi
+        
+        # Check for ZBM EFI images
+        if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null; then
+            print_warning "ZFSBootMenu EFI images missing"
+            zbm_issues=true
+        else
+            print_success "ZFSBootMenu EFI images found"
+            
+            # Check for backup image
+            if [[ -f "$zbm_esp/vmlinuz.efi" ]] && [[ ! -f "$zbm_esp/vmlinuz-backup.efi" ]]; then
+                print_warning "ZFSBootMenu backup image missing"
+                zbm_issues=true
+            else
+                print_success "ZFSBootMenu backup image exists"
+            fi
         fi
     fi
     
-    # Only repair if issues were found
+    # Only repair if issues were found or forced
     if [[ "$zbm_issues" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
         # Create missing configuration
         if [[ ! -f "$zbm_config" ]] && confirm_repair "Create ZFSBootMenu configuration"; then
@@ -449,8 +464,8 @@ EOF" "Creating keymap cmdline configuration"
             execute_repair "mkdir -p $zbm_esp" "Creating ZBM ESP directory"
         fi
         
-        # Generate missing EFI images
-        if ! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null && confirm_repair "Generate ZFSBootMenu images"; then
+        # Generate missing or forced EFI images
+        if (! ls "$zbm_esp"/vmlinuz*.efi &> /dev/null || [[ "$FORCE_REBUILD" == true ]]) && confirm_repair "Generate ZFSBootMenu images"; then
             execute_repair "generate-zbm" "Building ZFSBootMenu images"
         fi
         
@@ -933,6 +948,13 @@ main() {
                 AUTO_REPAIR=true
                 shift
                 ;;
+            --force-rebuild)
+                FORCE_REBUILD=true
+                AUTO_REPAIR=true
+                print_warning "Force rebuild mode: Will rebuild initramfs and ZFSBootMenu"
+                print_warning "Hostid will NEVER be regenerated automatically"
+                shift
+                ;;
             --dry-run)
                 DRY_RUN=true
                 AUTO_REPAIR=true  # Enable repair logic for dry-run
@@ -955,11 +977,15 @@ main() {
                 echo "Options:"
                 echo "  --repair          Enable automatic repairs (interactive)"
                 echo "  --force           Force all repairs without prompting"
+                echo "  --force-rebuild   Force rebuild of initramfs and ZFSBootMenu (never hostid)"
                 echo "  --dry-run         Show what would be repaired without doing it"
                 echo "  --scrub           Start scrub operation on pools"
                 echo "  --pool POOLNAME   Check/repair specific pool only"
                 echo "  --skip-boot-check Skip boot component checks"
                 echo "  --help            Show this help message"
+                echo ""
+                echo "WARNING: --force-rebuild will regenerate boot images even if working!"
+                echo "         Hostid is NEVER regenerated automatically for safety."
                 echo ""
                 echo "Compatible with systems installed via voidZFSInstallRepo.sh"
                 exit 0
@@ -977,6 +1003,10 @@ main() {
         print_warning "DRY RUN MODE: No actual changes will be made"
     fi
     
+    if [[ "$FORCE_REBUILD" == true ]]; then
+        print_warning "FORCE REBUILD MODE: Boot components will be regenerated"
+    fi
+    
     if [[ "$AUTO_REPAIR" == true ]] && [[ "$DRY_RUN" == false ]]; then
         print_warning "AUTO REPAIR MODE: Issues will be automatically repaired"
     fi
@@ -984,7 +1014,7 @@ main() {
     check_root
     check_zfs_availability
     
-    # Boot-related checks and repairs (only repair when issues found)
+    # Boot-related checks and repairs (only repair when issues found or forced)
     if [[ "$check_boot_components" == true ]]; then
         check_and_repair_hostid
         check_and_repair_zfs_services  
@@ -1026,6 +1056,10 @@ main() {
     
     if [[ "$DRY_RUN" == true ]]; then
         print_warning "This was a dry run. Use --repair to perform actual fixes."
+    fi
+    
+    if [[ "$FORCE_REBUILD" == true ]]; then
+        print_warning "Boot components were rebuilt. Test booting before rebooting!"
     fi
 }
 
