@@ -50,7 +50,7 @@ output "eDP-1" {
 // ============================================================================
 layout {
     // Gaps between windows (modern look)
-    gaps 12
+    gaps 10
     
     // Center focused column
     center-focused-column "never"
@@ -67,7 +67,7 @@ layout {
     
     // Focus ring (active window highlight)
     focus-ring {
-        width 3
+        width 5
         active-color "#FFD700"    // Yellow for active window
         inactive-color "#4A4A4A"  // Dull gray for inactive
         
@@ -77,7 +77,7 @@ layout {
     
     // Border configuration
     border {
-        width 2
+        width 3
         active-color "#FFD700"    // Yellow border for active
         inactive-color "#4A4A4A"  // Gray border for inactive
         
