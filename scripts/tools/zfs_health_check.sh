@@ -162,46 +162,57 @@ check_and_repair_hostid() {
 
 # Check and repair ZFS services only if they have issues
 check_and_repair_zfs_services() {
-    print_header "ZFS Services Check"
+    print_header "ZFS Installation and Services Check"
     local services_need_repair=false
-    local -a zfs_services=("zfs-import" "zfs-mount")
-    local service
-    local service_path
-    local service_link
-    local status
     
-    for service in "${zfs_services[@]}"; do
-        service_path="/etc/sv/$service"
-        service_link="/var/service/$service"
+    # Check if ZFS package is installed
+    if xbps-query zfs >/dev/null 2>&1; then
+        print_success "ZFS package is installed"
         
-        if [[ -d "$service_path" ]]; then
-            if [[ -L "$service_link" ]]; then
-                status=$(sv status "$service" 2>/dev/null || echo "down")
-                if [[ "$status" =~ "run" ]]; then
-                    print_success "Service $service is running"
-                else
-                    print_warning "Service $service is not running: $status"
-                    services_need_repair=true
-                    
-                    if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Start $service service"; then
-                        execute_repair "sv up $service" "Starting $service service"
-                    fi
-                fi
-            else
-                print_warning "Service $service not enabled"
-                services_need_repair=true
-                
-                if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Enable $service service"; then
-                    execute_repair "ln -sf $service_path $service_link" "Enabling $service service"
-                fi
-            fi
+        # Check if kernel module is loaded
+        if lsmod | grep -q "^zfs "; then
+            print_success "ZFS kernel module is loaded"
         else
-            print_warning "Service $service not found - ZFS may not be properly installed"
+            print_warning "ZFS kernel module is not loaded"
+            services_need_repair=true
+            
+            if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Load ZFS kernel module"; then
+                execute_repair "modprobe zfs" "Loading ZFS kernel module"
+            fi
         fi
-    done
+        
+        # Check if ZFS utilities are available
+        if command -v zpool >/dev/null 2>&1 && command -v zfs >/dev/null 2>&1; then
+            print_success "ZFS utilities are available"
+        else
+            print_warning "ZFS utilities are not available"
+            services_need_repair=true
+        fi
+        
+        # Check if ZFS pools are imported
+        local pool_count=$(zpool list -H 2>/dev/null | wc -l)
+        if [[ $pool_count -gt 0 ]]; then
+            print_success "ZFS pools are imported ($pool_count pool(s) found)"
+        else
+            print_warning "No ZFS pools are imported"
+            services_need_repair=true
+            
+            if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Import available ZFS pools"; then
+                execute_repair "zpool import -a" "Importing ZFS pools"
+            fi
+        fi
+        
+    else
+        print_warning "ZFS package is not installed"
+        services_need_repair=true
+        
+        if [[ "$AUTO_REPAIR" == true ]] && confirm_repair "Install ZFS package"; then
+            execute_repair "xbps-install -y zfs" "Installing ZFS package"
+        fi
+    fi
     
     if [[ "$services_need_repair" == true ]] && [[ "$AUTO_REPAIR" == true ]]; then
-        print_repair "Waiting for services to stabilize..."
+        print_repair "Waiting for ZFS to stabilize..."
         sleep 3
     fi
 }
