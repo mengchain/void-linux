@@ -1,0 +1,397 @@
+// NIRI Configuration File for Pure Wayland Void Linux
+// This configuration provides a modern dark theme with Windows-like keybindings
+// for easier transition from Windows to Linux
+
+// ============================================================================
+// INPUT CONFIGURATION
+// ============================================================================
+input {
+    keyboard {
+        xkb {
+            // Set your keyboard layout
+            layout "us"
+            // Uncomment and modify if you need variant or options
+            // variant "dvorak"
+            // options "ctrl:nocaps,compose:ralt"
+        }
+        
+        // Key repeat settings
+        repeat-delay 600
+        repeat-rate 25
+    }
+    
+    touchpad {
+        tap
+        dwt  // Disable while typing
+        natural-scroll
+        accel-speed 0.2
+        accel-profile "adaptive"
+    }
+    
+    mouse {
+        accel-speed 0.0
+        accel-profile "flat"
+    }
+}
+
+// ============================================================================
+// OUTPUT CONFIGURATION
+// ============================================================================
+output "eDP-1" {
+    // Uncomment and adjust for your display
+    // mode "1920x1080@60.000"
+    scale 1.0
+    transform "normal"
+    position x=0 y=0
+}
+
+// ============================================================================
+// LAYOUT CONFIGURATION
+// ============================================================================
+layout {
+    // Gaps between windows (modern look)
+    gaps 8
+    
+    // Center focused column
+    center-focused-column "never"
+    
+    // Preset column widths
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+    }
+    
+    // Default column width
+    default-column-width { proportion 0.5; }
+    
+    // Focus ring (active window highlight)
+    focus-ring {
+        width 3
+        active-color "#FFD700"    // Yellow for active window
+        inactive-color "#4A4A4A"  // Dull gray for inactive
+        
+        // Gradient settings (optional)
+        // active-gradient from="#FFD700" to="#FFA500" angle=45
+    }
+    
+    // Border configuration
+    border {
+        width 2
+        active-color "#FFD700"    // Yellow border for active
+        inactive-color "#4A4A4A"  // Gray border for inactive
+        
+        // Gradient option
+        // active-gradient from="#FFD700" to="#FFA500" angle=45
+    }
+    
+    // Struts - reserve space for panels/bars
+    struts {
+        left 0
+        right 0
+        top 0
+        bottom 0
+    }
+}
+
+// ============================================================================
+// WINDOW RULES
+// ============================================================================
+window-rule {
+    // All windows get rounded corners
+    geometry-corner-radius 12
+    clip-to-geometry true
+}
+
+// Example: Floating windows
+window-rule {
+    match app-id="^org.gnome.Calculator$"
+    default-column-width { fixed 400; }
+    open-floating true
+}
+
+// File manager (lf in foot terminal)
+window-rule {
+    match title="^lf.*"
+    default-column-width { proportion 0.5; }
+}
+
+// ============================================================================
+// APPEARANCE & THEME
+// ============================================================================
+prefer-no-csd  // Prefer server-side decorations
+
+// Cursor theme
+cursor {
+    xcursor-theme "Adwaita"
+    xcursor-size 24
+}
+
+// ============================================================================
+// ANIMATIONS
+// ============================================================================
+animations {
+    // Smooth window movements
+    slowdown 1.0
+    
+    window-open {
+        duration-ms 200
+        curve "ease-out-cubic"
+    }
+    
+    window-close {
+        duration-ms 150
+        curve "ease-in-cubic"
+    }
+    
+    window-movement {
+        duration-ms 200
+        curve "ease-out-cubic"
+    }
+    
+    workspace-switch {
+        duration-ms 250
+        curve "ease-out-cubic"
+    }
+    
+    horizontal-view-movement {
+        duration-ms 250
+        curve "ease-out-cubic"
+    }
+    
+    config-notification-open-close {
+        duration-ms 200
+    }
+}
+
+// ============================================================================
+// KEYBINDINGS (Windows-like shortcuts)
+// ============================================================================
+binds {
+    // Mod key: Use "Super" for Windows key
+    Mod { default Mod+T; }  // Mod key definition is internal
+    
+    // ========================================================================
+    // SYSTEM & SESSION
+    // ========================================================================
+    
+    // Win+L: Lock screen (Windows-like)
+    Mod+L { spawn "waylock"; }
+    
+    // Win+Shift+Q: Quit NIRI
+    Mod+Shift+Q { quit; }
+    
+    // Win+Shift+R: Reload config
+    Mod+Shift+R { reload-config; }
+    
+    // ========================================================================
+    // APPLICATION LAUNCHERS (Windows-like)
+    // ========================================================================
+    
+    // Win+T: Terminal (like Windows Terminal)
+    Mod+T { spawn "foot"; }
+    
+    // Win+E: File Manager (like Windows Explorer)
+    Mod+E { spawn "foot" "-e" "lf"; }
+    
+    // Win+R: Application Launcher (like Windows Run)
+    Mod+R { spawn "fuzzel"; }
+    
+    // Or traditional Alt+F2
+    Alt+F2 { spawn "fuzzel"; }
+    
+    // ========================================================================
+    // SCREENSHOTS (Windows-like)
+    // ========================================================================
+    
+    // Win+Shift+S: Screenshot selection (like Windows Snip)
+    Mod+Shift+S { spawn "grim" "-g" "$(slurp)" "-" "|" "wl-copy"; }
+    
+    // Print Screen: Full screenshot
+    Print { spawn "grim" "-" "|" "wl-copy"; }
+    
+    // Alt+Print: Screenshot active window
+    Alt+Print { spawn "sh" "-c" "grim -g \"$(swaymsg -t get_tree | jq -r '.. | select(.focused?) | .rect | \"\\(.x),\\(.y) \\(.width)x\\(.height)\"')\" - | wl-copy"; }
+    
+    // ========================================================================
+    // WINDOW MANAGEMENT (Windows-like)
+    // ========================================================================
+    
+    // Win+Left/Right: Snap windows (Windows Snap)
+    Mod+Left { consume-or-ignore-window-open-request; focus-column-left; }
+    Mod+Right { consume-or-ignore-window-open-request; focus-column-right; }
+    Mod+Up { focus-window-up; }
+    Mod+Down { focus-window-down; }
+    
+    // Win+Shift+Left/Right: Move windows
+    Mod+Shift+Left { move-column-left; }
+    Mod+Shift+Right { move-column-right; }
+    Mod+Shift+Up { move-window-up; }
+    Mod+Shift+Down { move-window-down; }
+    
+    // Alt+F4: Close window (Windows-like)
+    Alt+F4 { close-window; }
+    
+    // Win+Q: Alternative close window
+    Mod+Q { close-window; }
+    
+    // Alt+Tab: Switch windows (Windows-like)
+    Alt+Tab { focus-window-down-or-right; }
+    Alt+Shift+Tab { focus-window-up-or-left; }
+    
+    // Win+Tab: Workspace overview
+    Mod+Tab { focus-workspace-down; }
+    Mod+Shift+Tab { focus-workspace-up; }
+    
+    // ========================================================================
+    // WINDOW SIZING
+    // ========================================================================
+    
+    // Win+F: Maximize/Fullscreen (Windows-like)
+    Mod+F { maximize-column; }
+    
+    // Win+Shift+F: True fullscreen
+    Mod+Shift+F { fullscreen-window; }
+    
+    // Resize windows
+    Mod+Minus { set-column-width "-10%"; }
+    Mod+Plus { set-column-width "+10%"; }
+    
+    // Reset window size
+    Mod+0 { reset-window-height; }
+    
+    // Preset window widths
+    Mod+1 { set-column-width "33%"; }
+    Mod+2 { set-column-width "50%"; }
+    Mod+3 { set-column-width "67%"; }
+    
+    // ========================================================================
+    // WORKSPACE MANAGEMENT (Windows-like Virtual Desktops)
+    // ========================================================================
+    
+    // Win+Ctrl+Left/Right: Switch workspaces (Windows 11 Virtual Desktops)
+    Mod+Ctrl+Left { focus-workspace-down; }
+    Mod+Ctrl+Right { focus-workspace-up; }
+    
+    // Win+Ctrl+D: Create new workspace
+    Mod+Ctrl+D { focus-workspace-down; }
+    
+    // Move window to workspace
+    Mod+Ctrl+Shift+Left { move-window-to-workspace-down; }
+    Mod+Ctrl+Shift+Right { move-window-to-workspace-up; }
+    
+    // Direct workspace switching (Win+1-9)
+    Mod+KP_1 { focus-workspace 1; }
+    Mod+KP_2 { focus-workspace 2; }
+    Mod+KP_3 { focus-workspace 3; }
+    Mod+KP_4 { focus-workspace 4; }
+    Mod+KP_5 { focus-workspace 5; }
+    Mod+KP_6 { focus-workspace 6; }
+    Mod+KP_7 { focus-workspace 7; }
+    Mod+KP_8 { focus-workspace 8; }
+    Mod+KP_9 { focus-workspace 9; }
+    
+    // Move to specific workspace
+    Mod+Shift+KP_1 { move-window-to-workspace 1; }
+    Mod+Shift+KP_2 { move-window-to-workspace 2; }
+    Mod+Shift+KP_3 { move-window-to-workspace 3; }
+    Mod+Shift+KP_4 { move-window-to-workspace 4; }
+    Mod+Shift+KP_5 { move-window-to-workspace 5; }
+    Mod+Shift+KP_6 { move-window-to-workspace 6; }
+    Mod+Shift+KP_7 { move-window-to-workspace 7; }
+    Mod+Shift+KP_8 { move-window-to-workspace 8; }
+    Mod+Shift+KP_9 { move-window-to-workspace 9; }
+    
+    // ========================================================================
+    // MEDIA KEYS (Volume & Brightness)
+    // ========================================================================
+    
+    // Volume control with PipeWire/WirePlumber
+    XF86AudioRaiseVolume { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%+"; }
+    XF86AudioLowerVolume { spawn "wpctl" "set-volume" "@DEFAULT_AUDIO_SINK@" "5%-"; }
+    XF86AudioMute { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"; }
+    XF86AudioMicMute { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
+    
+    // Brightness control with brightnessctl
+    XF86MonBrightnessUp { spawn "brightnessctl" "set" "5%+"; }
+    XF86MonBrightnessDown { spawn "brightnessctl" "set" "5%-"; }
+    
+    // Media playback
+    XF86AudioPlay { spawn "playerctl" "play-pause"; }
+    XF86AudioPause { spawn "playerctl" "pause"; }
+    XF86AudioNext { spawn "playerctl" "next"; }
+    XF86AudioPrev { spawn "playerctl" "previous"; }
+    
+    // ========================================================================
+    // COLUMN/VIEW CONTROLS
+    // ========================================================================
+    
+    // Consume window into column
+    Mod+C { consume-window-into-column; }
+    
+    // Expel window from column
+    Mod+X { expel-window-from-column; }
+    
+    // Center column
+    Mod+Shift+C { center-column; }
+    
+    // ========================================================================
+    // ADVANCED FEATURES
+    // ========================================================================
+    
+    // Toggle debug overlay
+    Mod+Shift+D { toggle-debug-tint; }
+    
+    // Screenshot active screen
+    Mod+Shift+P { screenshot; }
+    
+    // Screenshot window
+    Mod+Shift+W { screenshot-window; }
+}
+
+// ============================================================================
+// DEBUG SETTINGS
+// ============================================================================
+debug {
+    // Uncomment to enable debug features
+    // preview-render "screencast"
+    // disable-direct-scanout true
+    // render-drm-device "/dev/dri/renderD129"
+}
+
+// ============================================================================
+// SPAWN AT STARTUP
+// ============================================================================
+spawn-at-startup {
+    // Example: Start a status bar
+    // "waybar"
+    
+    // Example: Start notification daemon
+    // "mako"
+    
+    // Example: Set wallpaper
+    // "swaybg" "-i" "/path/to/wallpaper.jpg" "-m" "fill"
+}
+
+// ============================================================================
+// ENVIRONMENT VARIABLES
+// ============================================================================
+environment {
+    // Set dark theme for GTK applications
+    GTK_THEME "Adwaita-dark"
+    
+    // QT theme
+    QT_QPA_PLATFORMTHEME "qt5ct"
+    
+    // Enable Wayland for various toolkits
+    DISPLAY ":0"
+    WAYLAND_DISPLAY "wayland-1"
+    XDG_SESSION_TYPE "wayland"
+    XDG_CURRENT_DESKTOP "niri"
+    
+    // Firefox Wayland
+    MOZ_ENABLE_WAYLAND "1"
+    
+    // SDL
+    SDL_VIDEODRIVER "wayland"
+}
