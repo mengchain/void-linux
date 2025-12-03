@@ -217,7 +217,7 @@ binds {
     Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
     
     // Alt+Print: Screenshot active window
-    Alt+Print { spawn "sh" "-c" "grim -g \"$(swaymsg -t get_tree | jq -r '.. | select(.focused?) | .rect | \"\\(.x),\\(.y) \\(.width)x\\(.height)\"')\" - | wl-copy"; }
+    Alt+Print { spawn "sh" "-c" "grim -g \"$(slurp -w 0)\" ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
     
     // ========================================================================
     // WINDOW MANAGEMENT (Windows-like)
