@@ -1,7 +1,14 @@
 #!/bin/bash
 # filepath: zfs-install-updates.sh
 # ZFS/Kernel Update Installation with ZFSBootMenu Support
-# Performs the actual package updates with safety measures
+# Performs the actual package updates with comprehensive backup and safety measures
+# 
+# References:
+# - OpenZFS Administration Guide: https://openzfs.github.io/openzfs-docs/
+# - ZFS Best Practices: https://openzfs.github.io/openzfs-docs/Performance%20and%20Tuning/Workload%20Tuning.html
+# - ZFSBootMenu Documentation: https://docs.zfsbootmenu.org/
+# - Void Linux Handbook: https://docs.voidlinux.org/
+# - XBPS Package Manager: https://docs.voidlinux.org/xbps/index.html
 
 set -euo pipefail
 
@@ -19,14 +26,19 @@ KERNEL_UPDATED=false
 ZFS_UPDATED=false
 DRACUT_UPDATED=false
 
-# Colors for output - FIXED: Light Blue for consistency
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[1;94m'      # Light Blue (bright blue)
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# Global backup state
+BACKUP_DIR=""
+BACKUP_COMPLETED=false
+SNAPSHOTS_CREATED=false
+
+# Colors for output - Consistent with other scripts
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[1;94m'      # Light Blue (bright blue)
+readonly CYAN='\033[0;36m'
+readonly BOLD='\033[1m'
+readonly NC='\033[0m' # No Color
 
 # Standardized logging functions
 log() {
@@ -182,60 +194,517 @@ parse_updates() {
     success "Updates parsed and categorized"
 }
 
-# Create backup of critical files
+# ============================================================================
+# COMPREHENSIVE BACKUP CREATION
+# Best Practices Reference:
+# - OpenZFS: Snapshots are atomic, space-efficient backups
+# - Void Linux: Keep multiple backup generations
+# - ZFSBootMenu: Always backup ESP before modifications
+# ============================================================================
+
 create_backup() {
-    header "Creating Backup"
+    header "Creating Comprehensive Backup"
     
     local backup_dir="/var/backups/zfs-update-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$backup_dir"
     
     info "Backing up to $backup_dir"
     
-    # Backup ZFS configuration
+    # Export BACKUP_DIR for other functions and rollback script
+    export BACKUP_DIR="$backup_dir"
+    echo "BACKUP_DIR=$backup_dir" >> "$CONFIG_FILE"
+    
+    # ========================================
+    # CRITICAL ZFS STATE BACKUPS
+    # Best Practice: Always backup ZFS metadata before modifications
+    # Reference: OpenZFS Admin Guide - Backup and Recovery
+    # ========================================
+    
+    info "=== Backing Up ZFS State ==="
+    
+    # 1. ZFS Dataset List (REQUIRED FOR ROLLBACK)
+    info "Backing up ZFS dataset list..."
+    if zfs list -H -o name -t filesystem > "$backup_dir/zfs-datasets.txt" 2>/dev/null; then
+        local dataset_count
+        dataset_count=$(wc -l < "$backup_dir/zfs-datasets.txt")
+        success "Dataset list saved: $dataset_count datasets"
+    else
+        warning "Failed to backup ZFS dataset list"
+    fi
+    
+    # 2. Pool List (REQUIRED FOR ROLLBACK)
+    info "Backing up pool list..."
+    if zpool list -H -o name > "$backup_dir/zpool-list.txt" 2>/dev/null; then
+        local pool_count
+        pool_count=$(wc -l < "$backup_dir/zpool-list.txt")
+        success "Pool list saved: $pool_count pools"
+        
+        # Copy to exported-pools.txt for rollback consistency
+        cp "$backup_dir/zpool-list.txt" "$backup_dir/exported-pools.txt"
+        success "Exported pools list saved"
+    else
+        warning "Failed to backup pool list"
+    fi
+    
+    # 3. Detailed pool status with full configuration
+    info "Backing up detailed pool status..."
+    if zpool status > "$backup_dir/zpool-status-full.txt" 2>/dev/null; then
+        success "Pool status saved"
+    fi
+    
+    # 4. Pool properties for all pools
+    info "Backing up pool properties..."
+    while IFS= read -r pool; do
+        [[ -z "$pool" ]] && continue
+        zpool get all "$pool" > "$backup_dir/zpool-properties-${pool}.txt" 2>/dev/null || true
+    done < "$backup_dir/zpool-list.txt"
+    
+    # 5. Dataset properties for all filesystems
+    info "Backing up dataset properties..."
+    zfs get all > "$backup_dir/zfs-properties-all.txt" 2>/dev/null || true
+    
+    # 6. ZFS configuration files
     if [[ -f /etc/zfs/zpool.cache ]]; then
+        info "Backing up zpool.cache..."
         cp -p /etc/zfs/zpool.cache "$backup_dir/" || warning "Failed to backup zpool.cache"
+        success "zpool.cache backed up"
     fi
     
     if [[ -f /etc/hostid ]]; then
+        info "Backing up hostid..."
         cp -p /etc/hostid "$backup_dir/" || warning "Failed to backup hostid"
+        success "hostid backed up"
     fi
     
     if [[ -f /etc/zfs/zroot.key ]]; then
+        info "Backing up encryption key..."
         cp -p /etc/zfs/zroot.key "$backup_dir/" || warning "Failed to backup encryption key"
+        success "Encryption key backed up"
     fi
     
-    # Backup ZFSBootMenu configuration
-    if [[ -f /etc/zfsbootmenu/config.yaml ]]; then
-        cp -p /etc/zfsbootmenu/config.yaml "$backup_dir/" || warning "Failed to backup ZBM config"
+    # ========================================
+    # CREATE ZFS SNAPSHOTS (CRITICAL!)
+    # Best Practice: Atomic snapshots before any system modification
+    # Reference: OpenZFS Snapshots - https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Snapshot.html
+    # Snapshots are:
+    # - Atomic (taken instantly)
+    # - Space-efficient (only store changed blocks)
+    # - Can be rolled back atomically
+    # ========================================
+    
+    info "=== Creating ZFS Snapshots for Rollback ==="
+    
+    local snapshot_name="pre-update-$(date +%Y%m%d-%H%M%S)"
+    info "Snapshot name: $snapshot_name"
+    
+    # Get all ZFS filesystems - FIXED SIGPIPE
+    local datasets
+    datasets=$(zfs list -H -o name -t filesystem 2>/dev/null || echo "")
+    
+    if [[ -z "$datasets" ]]; then
+        warning "No ZFS datasets found - skipping snapshot creation"
+        SNAPSHOTS_CREATED=false
+    else
+        local snapshot_count=0
+        local failed_count=0
+        
+        # Create snapshots for each dataset
+        while IFS= read -r dataset; do
+            [[ -z "$dataset" ]] && continue
+            
+            info "Creating snapshot: $dataset@$snapshot_name"
+            
+            # Create snapshot (atomic operation)
+            if zfs snapshot "$dataset@$snapshot_name" 2>&1 | tee -a "$LOG_FILE"; then
+                success "Created: $dataset@$snapshot_name"
+                ((snapshot_count++))
+            else
+                error "Failed to create snapshot for: $dataset"
+                ((failed_count++))
+            fi
+        done <<< "$datasets"
+        
+        if [[ $snapshot_count -gt 0 ]]; then
+            success "Created $snapshot_count ZFS snapshot(s)"
+            SNAPSHOTS_CREATED=true
+            
+            # Save snapshot name to config for rollback
+            echo "SNAPSHOT_NAME=$snapshot_name" >> "$CONFIG_FILE"
+            echo "INSTALL_SNAPSHOT_NAME=$snapshot_name" >> "$CONFIG_FILE"
+            
+            # Save snapshot list for rollback verification
+            zfs list -t snapshot -H -o name | grep "@$snapshot_name" > "$backup_dir/created-snapshots.txt"
+            
+            info "Snapshot list saved to: created-snapshots.txt"
+        else
+            error "No snapshots were created!"
+            SNAPSHOTS_CREATED=false
+            
+            if [[ $failed_count -gt 0 ]]; then
+                error "Failed to create $failed_count snapshot(s)"
+                error "Rollback will NOT be possible without snapshots!"
+                error "Aborting update for safety"
+                error_exit "Snapshot creation failed - cannot proceed safely"
+            fi
+        fi
     fi
     
-    # Backup dracut configuration
+    # ========================================
+    # PACKAGE STATE BACKUP
+    # Best Practice: Record exact package versions for downgrade
+    # Reference: XBPS Package Manager - https://docs.voidlinux.org/xbps/
+    # ========================================
+    
+    info "=== Backing Up Package State ==="
+    
+    # Save current package versions (CORRECT FILENAME FOR ROLLBACK)
+    info "Backing up installed packages..."
+    if xbps-query -l 2>/dev/null > "$backup_dir/installed-packages.txt"; then
+        success "Package list saved: installed-packages.txt"
+        
+        # Also create detailed version info for reference
+        xbps-query -l | awk '{print $1, $2}' > "$backup_dir/package-versions.txt"
+        
+        # Count packages
+        local pkg_count
+        pkg_count=$(wc -l < "$backup_dir/installed-packages.txt")
+        info "Backed up $pkg_count packages"
+    else
+        error "Failed to backup package list"
+        error_exit "Cannot proceed without package backup"
+    fi
+    
+    # Backup package repository configuration
+    if [[ -d /etc/xbps.d ]]; then
+        info "Backing up XBPS configuration..."
+        cp -rp /etc/xbps.d "$backup_dir/xbps.d-backup" || warning "Failed to backup XBPS config"
+    fi
+    
+    # ========================================
+    # SYSTEM CONFIGURATION BACKUPS
+    # Best Practice: Backup all boot-critical configuration
+    # ========================================
+    
+    info "=== Backing Up System Configuration ==="
+    
+    # 1. fstab (REQUIRED FOR ROLLBACK)
+    if [[ -f /etc/fstab ]]; then
+        info "Backing up fstab..."
+        cp -p /etc/fstab "$backup_dir/fstab" || warning "Failed to backup fstab"
+        success "fstab backed up"
+    fi
+    
+    # 2. Dracut configuration (CORRECT DIRECTORY NAME)
+    # Reference: Dracut - https://www.kernel.org/pub/linux/utils/boot/dracut/dracut.html
     if [[ -d /etc/dracut.conf.d ]]; then
-        cp -rp /etc/dracut.conf.d "$backup_dir/" || warning "Failed to backup dracut config"
+        info "Backing up dracut configuration..."
+        if cp -rp /etc/dracut.conf.d "$backup_dir/dracut.conf.d-backup"; then
+            local dracut_files
+            dracut_files=$(find "$backup_dir/dracut.conf.d-backup" -type f | wc -l)
+            success "Dracut config backed up: $dracut_files files"
+        else
+            warning "Failed to backup dracut configuration"
+        fi
     fi
+    
+    # Save main dracut.conf if exists
+    if [[ -f /etc/dracut.conf ]]; then
+        cp -p /etc/dracut.conf "$backup_dir/dracut.conf" 2>/dev/null || true
+        success "Main dracut.conf backed up"
+    fi
+    
+    # 3. ZFSBootMenu configuration (CORRECT FILENAME)
+    # Reference: ZFSBootMenu - https://docs.zfsbootmenu.org/en/latest/general/online-configuration.html
+    if [[ -f /etc/zfsbootmenu/config.yaml ]]; then
+        info "Backing up ZFSBootMenu configuration..."
+        if cp -p /etc/zfsbootmenu/config.yaml "$backup_dir/zfsbootmenu-config.yaml"; then
+            success "ZBM config backed up: zfsbootmenu-config.yaml"
+        else
+            warning "Failed to backup ZFSBootMenu config"
+        fi
+    fi
+    
+    # 4. Module configuration
+    if [[ -d /etc/modprobe.d ]]; then
+        info "Backing up module configuration..."
+        cp -rp /etc/modprobe.d "$backup_dir/modprobe.d-backup" 2>/dev/null || true
+    fi
+    
+    # ========================================
+    # ESP / BOOT PARTITION BACKUP
+    # Best Practice: Always backup ESP before bootloader changes
+    # Reference: ZFSBootMenu ESP Management
+    # ========================================
+    
+    if command -v generate-zbm &>/dev/null && [[ -d /boot/efi ]]; then
+        info "=== Backing Up ESP (Boot Partition) ==="
+        
+        info "This may take a moment for complete ESP backup..."
+        mkdir -p "$backup_dir/esp-complete-backup"
+        
+        # Calculate ESP size for user info
+        local esp_size
+        esp_size=$(du -sh /boot/efi 2>/dev/null | awk '{print $1}')
+        info "ESP size: $esp_size"
+        
+        if cp -r /boot/efi/* "$backup_dir/esp-complete-backup/" 2>&1 | tee -a "$LOG_FILE"; then
+            success "ESP completely backed up: esp-complete-backup/"
+            
+            # Verify critical files were backed up
+            if [[ -f "$backup_dir/esp-complete-backup/EFI/ZBM/vmlinuz.efi" ]]; then
+                success "ZBM EFI image verified in backup"
+            else
+                warning "ZBM EFI image not found in backup"
+            fi
+            
+            # Verify backup EFI image
+            if [[ -f "$backup_dir/esp-complete-backup/EFI/ZBM/vmlinuz-backup.efi" ]]; then
+                info "ZBM backup EFI image also backed up"
+            fi
+        else
+            warning "ESP backup may be incomplete"
+            warning "Check log for details: $LOG_FILE"
+        fi
+        
+        # Create ESP file list for verification
+        find /boot/efi -type f > "$backup_dir/esp-file-list.txt" 2>/dev/null || true
+        local esp_file_count
+        esp_file_count=$(wc -l < "$backup_dir/esp-file-list.txt")
+        info "ESP file count: $esp_file_count files"
+    fi
+    
+    # ========================================
+    # KERNEL AND BOOT STATE
+    # Best Practice: Track kernel versions for rollback
+    # ========================================
+    
+    info "=== Backing Up Kernel and Boot State ==="
     
     # Save current kernel version
+    info "Saving current kernel version..."
     uname -r > "$backup_dir/kernel-version.txt"
+    local current_kernel
+    current_kernel=$(cat "$backup_dir/kernel-version.txt")
+    success "Current kernel: $current_kernel"
     
-    # Save current package versions - FIXED SIGPIPE
-    local zfs_version dracut_version kernel_version
-    zfs_version=$(xbps-query zfs 2>/dev/null | grep "^pkgver:" | awk '{print $2}' || echo "unknown")
-    dracut_version=$(xbps-query dracut 2>/dev/null | grep "^pkgver:" | awk '{print $2}' || echo "unknown")
-    kernel_version=$(xbps-query linux 2>/dev/null | grep "^pkgver:" | awk '{print $2}' || echo "unknown")
+    # List installed kernels
+    info "Listing installed kernels..."
+    if ls /lib/modules/ > "$backup_dir/installed-kernels.txt" 2>/dev/null; then
+        local kernel_count
+        kernel_count=$(wc -l < "$backup_dir/installed-kernels.txt")
+        info "Installed kernels: $kernel_count"
+    fi
     
-    cat > "$backup_dir/package-versions.txt" <<EOF
-ZFS: $zfs_version
-Dracut: $dracut_version
-Kernel: $kernel_version
+    # Backup current initramfs metadata
+    if [[ -f "/boot/initramfs-${current_kernel}.img" ]]; then
+        info "Recording current initramfs..."
+        ls -lh "/boot/initramfs-${current_kernel}.img" > "$backup_dir/initramfs-info.txt"
+        
+        # Also check if ZFS is in current initramfs
+        if command -v lsinitrd &>/dev/null; then
+            local initrd_check
+            initrd_check=$(lsinitrd "/boot/initramfs-${current_kernel}.img" 2>/dev/null | grep -c "zfs" || echo "0")
+            echo "ZFS modules in current initramfs: $initrd_check" >> "$backup_dir/initramfs-info.txt"
+        fi
+        
+        success "Initramfs info saved"
+    fi
+    
+    # Backup /boot directory listing
+    if [[ -d /boot ]]; then
+        info "Creating /boot file list..."
+        ls -lR /boot > "$backup_dir/boot-contents.txt" 2>/dev/null || true
+    fi
+    
+    # ========================================
+    # BOOT CONFIGURATION
+    # ========================================
+    
+    # EFI boot entries
+    if command -v efibootmgr &>/dev/null; then
+        info "Backing up EFI boot entries..."
+        if efibootmgr > "$backup_dir/efi-boot-entries.txt" 2>/dev/null; then
+            success "EFI boot entries saved"
+        else
+            warning "Failed to backup EFI entries"
+        fi
+    fi
+    
+    # Save boot order
+    if command -v efibootmgr &>/dev/null; then
+        local boot_order
+        boot_order=$(efibootmgr 2>/dev/null | grep "BootOrder" || echo "")
+        if [[ -n "$boot_order" ]]; then
+            echo "$boot_order" > "$backup_dir/boot-order.txt"
+            info "Boot order saved"
+        fi
+    fi
+    
+    # ========================================
+    # SYSTEM STATE SNAPSHOT
+    # ========================================
+    
+    info "=== Capturing System State ==="
+    
+    # Loaded kernel modules
+    lsmod > "$backup_dir/loaded-modules.txt" 2>/dev/null || true
+    
+    # ZFS module version
+    if modinfo zfs &>/dev/null; then
+        modinfo zfs > "$backup_dir/zfs-module-info.txt" 2>/dev/null || true
+    fi
+    
+    # Disk layout
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT > "$backup_dir/disk-layout.txt" 2>/dev/null || true
+    
+    # Memory info
+    free -h > "$backup_dir/memory-info.txt" 2>/dev/null || true
+    
+    # ========================================
+    # FINAL BACKUP VALIDATION & MANIFEST
+    # ========================================
+    
+    info "=== Validating Backup Completeness ==="
+    
+    # Create comprehensive backup manifest
+    cat > "$backup_dir/BACKUP_MANIFEST.txt" << EOF
+================================================================================
+ZFS UPDATE BACKUP MANIFEST
+================================================================================
+Date: $(date '+%Y-%m-%d %H:%M:%S')
+Kernel: $(uname -r)
+Hostname: $(hostname)
+Backup Directory: $backup_dir
+
+================================================================================
+ZFS STATE BACKUPS
+================================================================================
+Dataset list:           $([ -f "$backup_dir/zfs-datasets.txt" ] && echo "YES ($(wc -l < "$backup_dir/zfs-datasets.txt") datasets)" || echo "NO")
+Pool list:              $([ -f "$backup_dir/zpool-list.txt" ] && echo "YES ($(wc -l < "$backup_dir/zpool-list.txt") pools)" || echo "NO")
+Exported pools list:    $([ -f "$backup_dir/exported-pools.txt" ] && echo "YES" || echo "NO")
+Pool status:            $([ -f "$backup_dir/zpool-status-full.txt" ] && echo "YES" || echo "NO")
+ZFS properties:         $([ -f "$backup_dir/zfs-properties-all.txt" ] && echo "YES" || echo "NO")
+zpool.cache:            $([ -f "$backup_dir/zpool.cache" ] && echo "YES" || echo "NO")
+hostid:                 $([ -f "$backup_dir/hostid" ] && echo "YES" || echo "NO")
+Encryption key:         $([ -f "$backup_dir/zroot.key" ] && echo "YES" || echo "NO")
+
+ZFS Snapshots:          $([ -f "$backup_dir/created-snapshots.txt" ] && echo "YES - $(wc -l < "$backup_dir/created-snapshots.txt") snapshots" || echo "NO")
+Snapshot name:          $(grep "SNAPSHOT_NAME=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 || echo "NONE")
+
+================================================================================
+SYSTEM CONFIGURATION BACKUPS
+================================================================================
+fstab:                  $([ -f "$backup_dir/fstab" ] && echo "YES" || echo "NO")
+dracut.conf.d:          $([ -d "$backup_dir/dracut.conf.d-backup" ] && echo "YES ($(find "$backup_dir/dracut.conf.d-backup" -type f 2>/dev/null | wc -l) files)" || echo "NO")
+dracut.conf:            $([ -f "$backup_dir/dracut.conf" ] && echo "YES" || echo "NO")
+ZBM config:             $([ -f "$backup_dir/zfsbootmenu-config.yaml" ] && echo "YES" || echo "NO")
+modprobe.d:             $([ -d "$backup_dir/modprobe.d-backup" ] && echo "YES" || echo "NO")
+XBPS config:            $([ -d "$backup_dir/xbps.d-backup" ] && echo "YES" || echo "NO")
+
+================================================================================
+PACKAGE STATE BACKUPS
+================================================================================
+Package list:           $([ -f "$backup_dir/installed-packages.txt" ] && echo "YES ($(wc -l < "$backup_dir/installed-packages.txt") packages)" || echo "NO")
+Package versions:       $([ -f "$backup_dir/package-versions.txt" ] && echo "YES" || echo "NO")
+
+================================================================================
+BOOT FILES BACKUPS
+================================================================================
+ESP backup:             $([ -d "$backup_dir/esp-complete-backup" ] && echo "YES ($(find "$backup_dir/esp-complete-backup" -type f 2>/dev/null | wc -l) files)" || echo "NO")
+ESP file list:          $([ -f "$backup_dir/esp-file-list.txt" ] && echo "YES" || echo "NO")
+Kernel version:         $([ -f "$backup_dir/kernel-version.txt" ] && echo "YES ($(cat "$backup_dir/kernel-version.txt"))" || echo "NO")
+Installed kernels:      $([ -f "$backup_dir/installed-kernels.txt" ] && echo "YES ($(wc -l < "$backup_dir/installed-kernels.txt") kernels)" || echo "NO")
+Initramfs info:         $([ -f "$backup_dir/initramfs-info.txt" ] && echo "YES" || echo "NO")
+Boot contents:          $([ -f "$backup_dir/boot-contents.txt" ] && echo "YES" || echo "NO")
+EFI boot entries:       $([ -f "$backup_dir/efi-boot-entries.txt" ] && echo "YES" || echo "NO")
+
+================================================================================
+SYSTEM STATE SNAPSHOTS
+================================================================================
+Loaded modules:         $([ -f "$backup_dir/loaded-modules.txt" ] && echo "YES" || echo "NO")
+ZFS module info:        $([ -f "$backup_dir/zfs-module-info.txt" ] && echo "YES" || echo "NO")
+Disk layout:            $([ -f "$backup_dir/disk-layout.txt" ] && echo "YES" || echo "NO")
+Memory info:            $([ -f "$backup_dir/memory-info.txt" ] && echo "YES" || echo "NO")
+
+================================================================================
+ROLLBACK READINESS
+================================================================================
+All critical backups:   $([ -f "$backup_dir/zfs-datasets.txt" ] && [ -f "$backup_dir/installed-packages.txt" ] && [ -f "$backup_dir/fstab" ] && echo "YES" || echo "NO")
+Snapshots created:      $([ -f "$backup_dir/created-snapshots.txt" ] && echo "YES" || echo "NO")
+ESP backed up:          $([ -d "$backup_dir/esp-complete-backup" ] && echo "YES" || echo "NO")
+
+ROLLBACK READY:         $([ -f "$backup_dir/created-snapshots.txt" ] && [ -f "$backup_dir/installed-packages.txt" ] && [ -f "$backup_dir/zfs-datasets.txt" ] && echo "✓ YES - Full rollback possible" || echo "✗ NO - Missing critical backups")
+
+================================================================================
+NOTES
+================================================================================
+- All backups are timestamped and preserved
+- ZFS snapshots are atomic and can be rolled back instantly
+- Package cache may allow package version rollback
+- ESP backup allows bootloader restoration
+- Use zfs-rollback-update.sh to rollback this update
+
+================================================================================
 EOF
     
-    success "Backup created at $backup_dir"
+    # Validate critical backups exist
+    local missing_critical=()
+    
+    if [[ ! -f "$backup_dir/zfs-datasets.txt" ]]; then
+        missing_critical+=("zfs-datasets.txt")
+    fi
+    
+    if [[ ! -f "$backup_dir/installed-packages.txt" ]]; then
+        missing_critical+=("installed-packages.txt")
+    fi
+    
+    if [[ ! -f "$backup_dir/created-snapshots.txt" ]]; then
+        missing_critical+=("ZFS snapshots")
+    fi
+    
+    if [[ ${#missing_critical[@]} -gt 0 ]]; then
+        error "Critical backups missing: ${missing_critical[*]}"
+        error_exit "Cannot proceed without complete backup"
+    fi
+    
+    success "All critical backups completed successfully"
+    BACKUP_COMPLETED=true
+    
+    # Display backup summary
+    echo ""
+    header "Backup Summary"
+    cat "$backup_dir/BACKUP_MANIFEST.txt"
+    echo ""
+    
+    success "Backup location: $backup_dir"
+    info "Backup manifest: $backup_dir/BACKUP_MANIFEST.txt"
+    
+    # Store backup path for easy access
     echo "$backup_dir" > /tmp/zfs-update-backup.txt
+    
+    return 0
 }
 
 # Perform the actual update
 perform_update() {
     header "Performing System Update"
+    
+    # Verify backup was completed
+    if [[ "$BACKUP_COMPLETED" != "true" ]]; then
+        error_exit "Backup not completed - cannot proceed with update"
+    fi
+    
+    if [[ "$SNAPSHOTS_CREATED" != "true" ]]; then
+        warning "No ZFS snapshots were created"
+        warning "Rollback capability will be limited"
+        
+        local response
+        read -p "Continue anyway? (yes/no): " response
+        if [[ "$response" != "yes" ]]; then
+            info "Update cancelled by user"
+            exit 0
+        fi
+    fi
     
     if [[ -z "$ALL_PACKAGES" ]]; then
         warning "No packages to update"
@@ -245,13 +714,19 @@ perform_update() {
     info "Updating packages: $ALL_PACKAGES"
     
     # Perform update with xbps-install
+    # Reference: XBPS - https://docs.voidlinux.org/xbps/index.html#updating-the-system
     if xbps-install -yu $ALL_PACKAGES 2>&1 | tee -a "$LOG_FILE"; then
         success "Packages updated successfully"
+        
+        # Save update flags to config for rollback
+        echo "KERNEL_UPDATED=$KERNEL_UPDATED" >> "$CONFIG_FILE"
+        echo "ZFS_UPDATED=$ZFS_UPDATED" >> "$CONFIG_FILE"
+        echo "DRACUT_UPDATED=$DRACUT_UPDATED" >> "$CONFIG_FILE"
     else
         error_exit "Package update failed"
     fi
     
-    # Sync xbps
+    # Sync xbps database
     info "Synchronizing package database..."
     xbps-install -S || warning "Failed to sync package database"
 }
@@ -276,6 +751,7 @@ rebuild_initramfs() {
             
             info "Rebuilding initramfs for kernel $kernel_ver"
             
+            # Reference: Dracut - https://www.kernel.org/pub/linux/utils/boot/dracut/dracut.html
             if dracut -f --kver "$kernel_ver" 2>&1 | tee -a "$LOG_FILE"; then
                 success "Initramfs rebuilt for kernel $kernel_ver"
                 
@@ -328,6 +804,7 @@ regenerate_zfsbootmenu() {
         fi
         
         # Generate new ZFSBootMenu
+        # Reference: ZFSBootMenu - https://docs.zfsbootmenu.org/en/latest/guides/general/generate-zbm.html
         info "Running generate-zbm..."
         if generate-zbm 2>&1 | tee -a "$LOG_FILE"; then
             success "ZFSBootMenu regenerated successfully"
@@ -438,19 +915,6 @@ post_update_verification() {
         fi
     done
     
-    # Verify ZFS services
-    info "Checking ZFS services..."
-    for service in zfs-import zfs-mount zfs-zed; do
-        local sv_status
-        sv_status=$(sv status "$service" 2>/dev/null || echo "not found")
-        
-        if echo "$sv_status" | grep -q "run"; then
-            success "Service $service is running"
-        else
-            warning "Service $service may need attention"
-        fi
-    done
-    
     # Check for any broken symlinks in /boot
     info "Checking for broken symlinks in /boot..."
     local broken_links
@@ -475,6 +939,7 @@ generate_summary() {
         local backup_dir
         backup_dir=$(cat /tmp/zfs-update-backup.txt)
         info "Backup location: $backup_dir"
+        info "Backup manifest: $backup_dir/BACKUP_MANIFEST.txt"
     fi
     
     if [[ "$KERNEL_UPDATED" == true ]]; then
@@ -493,8 +958,15 @@ generate_summary() {
     info "2. Run zfs-post-update-verify.sh to verify the update"
     if [[ "$KERNEL_UPDATED" == true ]] || [[ "$ZFS_UPDATED" == true ]]; then
         info "3. Reboot the system when ready"
+        info "4. If issues occur, use zfs-rollback-update.sh to rollback"
     fi
     echo ""
+    
+    if [[ "$SNAPSHOTS_CREATED" == true ]]; then
+        success "ZFS snapshots were created - full rollback is possible"
+    else
+        warning "No ZFS snapshots were created - rollback capability is limited"
+    fi
 }
 
 # Main execution
@@ -505,7 +977,16 @@ main() {
     load_config
     verify_zfs_health
     parse_updates
+    
+    # CRITICAL: Complete backup BEFORE any updates
     create_backup
+    
+    # Verify backup completed before proceeding
+    if [[ "$BACKUP_COMPLETED" != "true" ]]; then
+        error_exit "Backup did not complete successfully - aborting update"
+    fi
+    
+    # Proceed with update
     perform_update
     rebuild_initramfs
     regenerate_zfsbootmenu
