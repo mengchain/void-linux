@@ -22,11 +22,11 @@ FIRMWARE_COUNT=0
 ESP_MOUNT=""
 ZBM_EFI_PATH=""
 
-# Colors for output
+# Colors for output 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
+BLUE='\033[1;94m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
@@ -126,19 +126,17 @@ check_available_updates() {
     fi
     success "Package database synced"
     
-    # Localize ALL variables
-    local all_updates zfs_updates zfs_count zbm_updates zbm_count
-    local dracut_updates dracut_count kernel_updates kernel_count
-    local firmware_updates firmware_count total_updates
-    
-    # Get all available updates first
+    # Capture output then grep - FIXED SIGPIPE
+    local all_updates
     all_updates=$(xbps-install -un 2>/dev/null || true)
     
     # Check for ZFS-specific updates (more precise matching)
+    local zfs_updates zfs_count
     zfs_updates=$(echo "$all_updates" | grep -E "^zfs-[0-9]" || true)
     zfs_count=$(echo "$zfs_updates" | grep -c "^zfs-" 2>/dev/null || echo "0")
     
     # Check for ZFSBootMenu updates - try multiple patterns
+    local zbm_updates zbm_count
     zbm_updates=$(echo "$all_updates" | grep -E "^zfsbootmenu " || true)
     if [ -n "$zbm_updates" ]; then
         zbm_count=$(echo "$zbm_updates" | wc -l)
@@ -147,19 +145,22 @@ check_available_updates() {
     fi
     
     # Check for dracut updates
+    local dracut_updates dracut_count
     dracut_updates=$(echo "$all_updates" | grep -E "^dracut-[0-9]" || true)
     dracut_count=$(echo "$dracut_updates" | grep -c "^dracut-" 2>/dev/null || echo "0")
     
     # Check for kernel updates (Void uses linux<version> packages)
+    local kernel_updates kernel_count
     kernel_updates=$(echo "$all_updates" | grep -E "^linux[0-9]+\.[0-9]+-[0-9]" || true)
     kernel_count=$(echo "$kernel_updates" | grep -c -E "^linux[0-9]+\.[0-9]+" 2>/dev/null || echo "0")
     
     # Check for firmware updates
+    local firmware_updates firmware_count
     firmware_updates=$(echo "$all_updates" | grep -E "^linux-firmware-[0-9]" || true)
     firmware_count=$(echo "$firmware_updates" | grep -c "^linux-firmware-" 2>/dev/null || echo "0")
     
     # Calculate total relevant updates
-    total_updates=$((zfs_count + zbm_count + dracut_count + kernel_count + firmware_count))
+    local total_updates=$((zfs_count + zbm_count + dracut_count + kernel_count + firmware_count))
     
     if [ "$total_updates" -eq 0 ]; then
         header "NO UPDATES AVAILABLE"
@@ -207,7 +208,10 @@ check_available_updates() {
 check_zfs_loaded() {
     info "Checking ZFS module status..."
     
-    if ! lsmod | grep -q zfs; then
+    # Capture lsmod output then grep - FIXED SIGPIPE
+    local lsmod_output
+    lsmod_output=$(lsmod)
+    if ! echo "$lsmod_output" | grep -q zfs; then
         error_exit "ZFS module is not loaded. Load it with: modprobe zfs"
     fi
     
@@ -259,9 +263,10 @@ check_void_services() {
     
     # Check if any services are using ZFS datasets
     if command -v sv >/dev/null 2>&1; then
-        local active_services service service_name
-        # Check for services that might be using ZFS
-        active_services=$(sv status /var/service/* 2>/dev/null | grep "^run:" | awk '{print $2}' || true)
+        # Capture sv output then grep - FIXED SIGPIPE
+        local sv_status active_services service service_name
+        sv_status=$(sv status /var/service/* 2>/dev/null || true)
+        active_services=$(echo "$sv_status" | grep "^run:" | awk '{print $2}' || true)
         
         for service in $active_services; do
             service_name=$(basename "$service")
@@ -284,8 +289,12 @@ check_zfs_specific_updates() {
     local zfs_specific_count=0
     local pkg
     
+    # Capture xbps output then grep - FIXED SIGPIPE
+    local xbps_updates
+    xbps_updates=$(xbps-install -un 2>/dev/null || true)
+    
     for pkg in $zfs_packages; do
-        if xbps-install -un 2>/dev/null | grep -q "^${pkg}-"; then
+        if echo "$xbps_updates" | grep -q "^${pkg}-"; then
             zfs_specific_updates="$zfs_specific_updates $pkg"
             zfs_specific_count=$((zfs_specific_count + 1))
         fi
@@ -322,7 +331,10 @@ detect_zfsbootmenu() {
     done
     
     if command -v efibootmgr >/dev/null 2>&1; then
-        if efibootmgr 2>/dev/null | grep -qi "zfsbootmenu\|ZBM"; then
+        # Capture efibootmgr output then grep - FIXED SIGPIPE
+        local efi_output
+        efi_output=$(efibootmgr 2>/dev/null || true)
+        if echo "$efi_output" | grep -qi "zfsbootmenu\|ZBM"; then
             zbm_detected=true
             info "ZFSBootMenu found in EFI boot entries"
         fi
@@ -356,12 +368,17 @@ check_system_versions() {
     
     # More reliable ZFS version detection
     if command -v zfs >/dev/null 2>&1; then
-        current_zfs=$(zfs version 2>/dev/null | grep -E "^zfs-kmod" | awk '{print $2}' || echo "unknown")
-        zfs_userland=$(zfs version 2>/dev/null | grep -E "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
+        # Capture zfs version output - FIXED SIGPIPE
+        local zfs_ver_output
+        zfs_ver_output=$(zfs version 2>/dev/null || true)
+        current_zfs=$(echo "$zfs_ver_output" | grep -E "^zfs-kmod" | awk '{print $2}' || echo "unknown")
+        zfs_userland=$(echo "$zfs_ver_output" | grep -E "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
         
         # Fallback to modinfo if zfs version doesn't work
         if [ "$current_zfs" = "unknown" ]; then
-            current_zfs=$(modinfo zfs 2>/dev/null | grep -E "^version:" | awk '{print $2}' || echo "unknown")
+            local modinfo_output
+            modinfo_output=$(modinfo zfs 2>/dev/null || true)
+            current_zfs=$(echo "$modinfo_output" | grep -E "^version:" | awk '{print $2}' || echo "unknown")
         fi
     else
         current_zfs="unknown"
@@ -407,15 +424,19 @@ check_pool_health() {
     info "Current pool status:"
     zpool status -v | tee -a "$LOG_FILE"
     
-    if zpool status | grep -E "(DEGRADED|FAULTED|OFFLINE|UNAVAIL)"; then
+    # Capture zpool status then grep - FIXED SIGPIPE
+    local pool_status
+    pool_status=$(zpool status)
+    
+    if echo "$pool_status" | grep -E "(DEGRADED|FAULTED|OFFLINE|UNAVAIL)"; then
         error_exit "ZFS pools have errors. Fix pool issues before updating."
     fi
     
-    if zpool status | grep -q "scrub in progress"; then
+    if echo "$pool_status" | grep -q "scrub in progress"; then
         error_exit "ZFS scrub is in progress. Wait for completion before updating."
     fi
     
-    if zpool status | grep -q "resilver in progress"; then
+    if echo "$pool_status" | grep -q "resilver in progress"; then
         error_exit "ZFS resilver is in progress. Wait for completion before updating."
     fi
     
@@ -436,12 +457,16 @@ check_zbm_boot_pool() {
         boot_pools="zroot"
     else
         # Fallback to other common names
-        boot_pools=$(zpool list -H -o name 2>/dev/null | grep -E "(bpool|boot|rpool)" || true)
+        local pool_list
+        pool_list=$(zpool list -H -o name 2>/dev/null || true)
+        boot_pools=$(echo "$pool_list" | grep -E "(bpool|boot|rpool)" || true)
     fi
     
     if [ -z "$boot_pools" ] && [ -f "$ZBM_CONFIG" ]; then
-        # Try to detect from ZBM config
-        boot_pools=$(grep -E "pool:" "$ZBM_CONFIG" 2>/dev/null | grep -v "^#" | awk -F: '{print $2}' | tr -d ' "' || true)
+        # Try to detect from ZBM config - FIXED grep
+        local zbm_config_content
+        zbm_config_content=$(cat "$ZBM_CONFIG" 2>/dev/null || true)
+        boot_pools=$(echo "$zbm_config_content" | grep -E "pool:" | grep -v "^#" | awk -F: '{print $2}' | tr -d ' "' || true)
     fi
     
     if [ -n "$boot_pools" ]; then
@@ -449,7 +474,10 @@ check_zbm_boot_pool() {
         echo "BOOT_POOLS=\"$boot_pools\"" >> "$CONFIG_FILE"
         
         for pool in $boot_pools; do
-            if ! zpool status "$pool" | grep -q "state: ONLINE"; then
+            # Capture zpool status then grep - FIXED SIGPIPE
+            local pool_status
+            pool_status=$(zpool status "$pool" 2>/dev/null || true)
+            if ! echo "$pool_status" | grep -q "state: ONLINE"; then
                 error_exit "Pool $pool is not ONLINE. Fix before updating."
             fi
         done
@@ -472,14 +500,17 @@ check_zbm_esp() {
     local esp_mount="" esp_path
     
     for esp_path in $esp_candidates; do
-        if findmnt -t vfat "$esp_path" >/dev/null 2>&1; then
+        # Capture findmnt output - FIXED SIGPIPE
+        local findmnt_output
+        findmnt_output=$(findmnt -t vfat "$esp_path" 2>/dev/null || true)
+        if [ -n "$findmnt_output" ]; then
             esp_mount="$esp_path"
             break
         fi
     done
     
     if [ -z "$esp_mount" ]; then
-        esp_mount=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1)
+        esp_mount=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1 || true)
     fi
     
     if [ -z "$esp_mount" ] || [ ! -d "$esp_mount" ]; then
@@ -498,7 +529,7 @@ check_zbm_esp() {
         error_exit "EFI System Partition has less than 50MB free"
     fi
     
-    # Check for ZBM files - CORRECTED PATHS
+    # Check for ZBM files - Match installation script paths: /boot/efi/EFI/ZBM/
     if [ -f "$esp_mount/EFI/ZBM/vmlinuz.efi" ]; then
         local zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz.efi"
         echo "ZBM_EFI_PATH=\"$zbm_efi_path\"" >> "$CONFIG_FILE"
@@ -584,17 +615,17 @@ check_disk_space() {
 check_running_processes() {
     info "Checking for interfering processes..."
     
-    # Check for database processes
+    # Check for database processes - FIXED pgrep
     if pgrep -f "(mysqld|postgresql|mongodb|mariadb)" >/dev/null 2>&1; then
         warning "Database processes detected - consider stopping before update"
     fi
     
-    # Check for backup processes
+    # Check for backup processes - FIXED pgrep
     if pgrep -f "(rsync|borgbackup|duplicity)" >/dev/null 2>&1; then
         warning "Backup processes detected - consider waiting for completion"
     fi
     
-    # Check for package manager processes
+    # Check for package manager processes - FIXED pgrep
     if pgrep -f "xbps-install" >/dev/null 2>&1; then
         error_exit "Another xbps-install process is running. Wait for completion."
     fi
