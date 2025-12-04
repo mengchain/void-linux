@@ -22,11 +22,11 @@ FIRMWARE_COUNT=0
 ESP_MOUNT=""
 ZBM_EFI_PATH=""
 
-# Colors for output 
+# Colors for output - UPDATED: Light Blue for better visibility
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[1;94m'
+BLUE='\033[1;94m'      # Light Blue (bright blue)
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
