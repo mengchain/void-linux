@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# filepath: install-void-zfs.sh
+# filepath: voidZFSInstallRepo.sh
 
 export TERM=xterm
  
@@ -590,6 +590,30 @@ TIMEZONE="$timezone"
 HARDWARECLOCK="UTC"
 KEYMAP="us"
 EOF
+
+# Set TTY font to smallest monospaced (Terminus size 8)
+print 'Configuring TTY font (Terminus 8x16)'
+cat >> /mnt/etc/vconsole.conf <<EOF
+FONT=ter-v16n
+EOF
+
+# Set default shell to bash for root and new users - NEW
+print 'Setting default shell to bash'
+# Change root shell to bash
+chroot /mnt chsh -s /bin/bash root
+
+# Set default shell for new users
+cat > /mnt/etc/default/useradd <<EOF
+# Default values for useradd
+GROUP=100
+HOME=/home
+INACTIVE=-1
+EXPIRE=
+SHELL=/bin/bash
+SKEL=/etc/skel
+CREATE_MAIL_SPOOL=yes
+EOF
+
 
 # Configure dracut for ZFS
 print 'Configuring dracut'
