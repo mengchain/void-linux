@@ -7,31 +7,40 @@ set -e
 
 exec &> >(tee "configureNinstall.log")
 
+# Colors for output - UPDATED: Consistent with other scripts
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;94m'  
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
 # Validation Functions
 check_prerequisites() {
     local failed=0
     
     # Check for root privileges
     if [[ $EUID -ne 0 ]]; then
-        echo "This script must be run as root" >&2
+        echo -e "${RED}✗ ERROR: This script must be run as root${NC}" >&2
         failed=1
     fi
     
     # Check for EFI boot mode
     if ! ls /sys/firmware/efi/efivars &>/dev/null; then
-        echo "System not booted in EFI mode" >&2
+        echo -e "${RED}✗ ERROR: System not booted in EFI mode${NC}" >&2
         failed=1
     fi
     
     # Check network connectivity
     if ! ping -c 1 voidlinux.org &>/dev/null; then
-        echo "No network connectivity to voidlinux.org" >&2
+        echo -e "${RED}✗ ERROR: No network connectivity to voidlinux.org${NC}" >&2
         failed=1
     fi
     
     # Check for ZFS module
     if ! modprobe zfs &>/dev/null; then
-        echo "ZFS kernel module not available" >&2
+        echo -e "${RED}✗ ERROR: ZFS kernel module not available${NC}" >&2
         failed=1
     fi
     
@@ -39,11 +48,11 @@ check_prerequisites() {
         exit 1
     fi
     
-    echo "Prerequisites check passed"
+    echo -e "${GREEN}✓ Prerequisites check passed${NC}"
 }
 
 print () {
-    echo -e "\n\033[1m> $1\033[0m\n"
+    echo -e "\n${BOLD}${CYAN}> $1${NC}\n"
     if [[ -n "$debug" ]]
     then
       read -rp "press enter to continue"
@@ -51,12 +60,12 @@ print () {
 }
 
 ask () {
-    read -p "> $1 " -r
+    read -p "${BLUE}> $1 ${NC}" -r
     echo
 }
 
 menu () {
-    PS3="> Choose a number: "
+    PS3="${BLUE}> Choose a number: ${NC}"
     select i in "$@"
     do
         echo "$i"
@@ -73,12 +82,12 @@ select_disk () {
         fi
     done < <(ls /dev/disk/by-id/)
     
-    PS3="Select installation disk: "
+    PS3="${BLUE}Select installation disk: ${NC}"
     select ENTRY in "${disks[@]}"; do
         if [[ -n $ENTRY ]]; then
             DISK="/dev/disk/by-id/$ENTRY"
             echo "$DISK" > /tmp/disk
-            echo "Installing on $ENTRY"
+            echo -e "${GREEN}✓ Installing on $ENTRY${NC}"
             break
         fi
     done
@@ -98,6 +107,7 @@ wipe () {
         # Wait for kernel to update
         partprobe "$DISK"
         sleep 2
+        echo -e "${GREEN}✓ Disk wiped successfully${NC}"
     fi
 }
 
@@ -121,10 +131,14 @@ partition () {
     until [ -e "$ZFS" ]; do sleep 1; done
         
     print "Formatting EFI partition"    
-    mkfs.vfat -F32 -n "EFI" "$EFI" || { echo "EFI format failed"; exit 1; }
+    mkfs.vfat -F32 -n "EFI" "$EFI" || { 
+        echo -e "${RED}✗ ERROR: EFI format failed${NC}" >&2
+        exit 1
+    }
     
     # Verify partition table
     sgdisk -p "$DISK"
+    echo -e "${GREEN}✓ Partitions created successfully${NC}"
 }
 
 zfs_passphrase () {
@@ -139,14 +153,14 @@ zfs_passphrase () {
     fi
     
     while true; do
-        read -r -p "> ZFS passphrase: " -s pass1
+        read -r -p "${BLUE}> ZFS passphrase: ${NC}" -s pass1
         echo
-        read -r -p "> Confirm passphrase: " -s pass2
+        read -r -p "${BLUE}> Confirm passphrase: ${NC}" -s pass2
         echo
         
         if [[ "$pass1" == "$pass2" ]]; then
             if [[ ${#pass1} -lt 8 ]]; then
-                echo "Passphrase must be at least 8 characters!"
+                echo -e "${YELLOW}⚠ WARNING: Passphrase must be at least 8 characters!${NC}"
                 continue
             fi
             echo "$pass1" > /etc/zfs/zroot.key
@@ -155,12 +169,13 @@ zfs_passphrase () {
             
             # Verify key file was created
             if [[ ! -f /etc/zfs/zroot.key ]] || [[ ! -s /etc/zfs/zroot.key ]]; then
-                echo "ERROR: Failed to create key file!" >&2
+                echo -e "${RED}✗ ERROR: Failed to create key file!${NC}" >&2
                 exit 1
             fi
+            echo -e "${GREEN}✓ Passphrase set successfully${NC}"
             break
         else
-            echo "Passphrases do not match. Try again."
+            echo -e "${YELLOW}⚠ WARNING: Passphrases do not match. Try again.${NC}"
         fi
     done
 }
@@ -180,11 +195,11 @@ zfs_passphrase_backup () {
     
     # Verify backup
     if ! diff /etc/zfs/zroot.key /mnt/root/zfs-keys/zroot.key &>/dev/null; then
-        echo "ERROR: Key backup verification failed!" >&2
+        echo -e "${RED}✗ ERROR: Key backup verification failed!${NC}" >&2
         exit 1
     fi
     
-    echo "✓ Key backup secured at /root/zfs-keys/"
+    echo -e "${GREEN}✓ Key backup secured at /root/zfs-keys/${NC}"
 }    
 
 create_pool () {
@@ -212,9 +227,10 @@ create_pool () {
     
     # Verify pool was created
     if ! zpool list zroot &>/dev/null; then
-        echo "ERROR: Pool creation failed!" >&2
+        echo -e "${RED}✗ ERROR: Pool creation failed!${NC}" >&2
         exit 1
     fi
+    echo -e "${GREEN}✓ ZFS pool 'zroot' created successfully${NC}"
 }
 
 create_root_dataset () {
@@ -224,6 +240,7 @@ create_root_dataset () {
 
     # Set cmdline
     zfs set org.zfsbootmenu:commandline="ro quiet loglevel=0" zroot/ROOT
+    echo -e "${GREEN}✓ Root dataset created${NC}"
 }
 
 create_system_dataset () {
@@ -242,18 +259,18 @@ create_system_dataset () {
 
     # Validate hostid per ZFS documentation
     if [[ ! -f /etc/hostid ]]; then
-        echo "ERROR: Failed to generate hostid!" >&2
+        echo -e "${RED}✗ ERROR: Failed to generate hostid!${NC}" >&2
         exit 1
     fi
     
     # Verify hostid is exactly 4 bytes
     if [[ $(stat -c%s /etc/hostid 2>/dev/null) -ne 4 ]]; then
-        echo "ERROR: Hostid file corrupted (wrong size)!" >&2
+        echo -e "${RED}✗ ERROR: Hostid file corrupted (wrong size)!${NC}" >&2
         exit 1
     fi
     
     # Display hostid for verification
-    echo "Generated hostid: $(hostid)"
+    echo -e "${BLUE}ℹ INFO: Generated hostid: $(hostid)${NC}"
      
     # Set bootfs
     print "Setting ZFS bootfs"
@@ -264,9 +281,10 @@ create_system_dataset () {
     
     # Verify mount
     if ! mountpoint -q /mnt; then
-        echo "ERROR: Failed to mount root dataset!" >&2
+        echo -e "${RED}✗ ERROR: Failed to mount root dataset!${NC}" >&2
         exit 1
     fi
+    echo -e "${GREEN}✓ System dataset created and mounted${NC}"
 }
 
 create_home_dataset () {
@@ -281,6 +299,7 @@ create_home_dataset () {
                -o recordsize=128K \
                -o compression=zstd \
                zroot/data/root
+    echo -e "${GREEN}✓ Home datasets created${NC}"
 }
 
 create_swapspace() {
@@ -291,11 +310,11 @@ create_swapspace() {
         
         # Get swap size with validation
         while true; do
-            read -p "Enter swap size (e.g., 4G, 8G): " swap_size
+            read -p "${BLUE}Enter swap size (e.g., 4G, 8G): ${NC}" swap_size
             if [[ $swap_size =~ ^[0-9]+[GMgm]$ ]]; then
                 break
             else
-                echo "Invalid format. Use format like 4G or 8G"
+                echo -e "${YELLOW}⚠ WARNING: Invalid format. Use format like 4G or 8G${NC}"
             fi
         done
         
@@ -317,15 +336,17 @@ create_swapspace() {
         done
         
         if [[ ! -e /dev/zvol/zroot/swap ]]; then
-            echo "ERROR: Swap zvol device did not appear!" >&2
+            echo -e "${RED}✗ ERROR: Swap zvol device did not appear!${NC}" >&2
             exit 1
         fi
 
         print "Formatting swap"
         mkswap -f /dev/zvol/zroot/swap
+        echo -e "${GREEN}✓ Swap space created: ${swap_size}${NC}"
         echo "$SWAP_CREATED" > /tmp/swap_created
     else
         SWAP_CREATED=false
+        echo -e "${BLUE}ℹ INFO: Skipping swap space creation${NC}"
         echo "$SWAP_CREATED" > /tmp/swap_created
     fi
 }
@@ -336,28 +357,30 @@ export_pool () {
     
     # Verify export
     if zpool list zroot &>/dev/null; then
-        echo "ERROR: Pool export failed!" >&2
+        echo -e "${RED}✗ ERROR: Pool export failed!${NC}" >&2
         exit 1
     fi
+    echo -e "${GREEN}✓ Pool exported successfully${NC}"
 }
 
 import_pool () {
     print "Importing zpool"
     zpool import -d /dev/disk/by-id -R /mnt zroot -N -f || {
-        echo "ERROR: Failed to import pool" >&2
+        echo -e "${RED}✗ ERROR: Failed to import pool${NC}" >&2
         exit 1
     }
     
     zfs load-key zroot || {
-        echo "ERROR: Failed to load encryption key" >&2
+        echo -e "${RED}✗ ERROR: Failed to load encryption key${NC}" >&2
         exit 1
     }
     
     # Verify import
     if ! zpool list zroot &>/dev/null; then
-        echo "ERROR: Pool not imported!" >&2
+        echo -e "${RED}✗ ERROR: Pool not imported!${NC}" >&2
         exit 1
     fi
+    echo -e "${GREEN}✓ Pool imported successfully${NC}"
 }
 
 mount_system () {
@@ -367,7 +390,7 @@ mount_system () {
 
     # Verify root mount
     if ! mountpoint -q /mnt; then
-        echo "ERROR: Root dataset not mounted!" >&2
+        echo -e "${RED}✗ ERROR: Root dataset not mounted!${NC}" >&2
         exit 1
     fi
 
@@ -379,9 +402,10 @@ mount_system () {
     
     # Verify EFI mount
     if ! mountpoint -q /mnt/boot/efi; then
-        echo "ERROR: EFI partition not mounted!" >&2
+        echo -e "${RED}✗ ERROR: EFI partition not mounted!${NC}" >&2
         exit 1
     fi
+    echo -e "${GREEN}✓ System mounted successfully${NC}"
 }
 
 copy_zpool_cache () {
@@ -397,7 +421,7 @@ copy_zpool_cache () {
     
     # Verify cache file exists and is not empty
     if [[ ! -s /etc/zfs/zpool.cache ]]; then
-        echo "ERROR: zpool.cache is missing or empty!" >&2
+        echo -e "${RED}✗ ERROR: zpool.cache is missing or empty!${NC}" >&2
         exit 1
     fi
     
@@ -405,11 +429,12 @@ copy_zpool_cache () {
     
     # Verify copy succeeded
     if ! diff /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache &>/dev/null; then
-        echo "ERROR: Cache file copy verification failed!" >&2
+        echo -e "${RED}✗ ERROR: Cache file copy verification failed!${NC}" >&2
         exit 1
     fi
     
-    echo "cachefile property set to: $cachefile_value"
+    echo -e "${GREEN}✓ ZFS cache configured${NC}"
+    echo -e "${BLUE}ℹ INFO: cachefile property set${NC}"
 }
 
 # Debug mode
@@ -419,6 +444,10 @@ if [[ "$1" == "debug" ]]; then
 fi
 
 # Main Installation Flow
+echo -e "\n${BOLD}${CYAN}=========================================="
+echo "Void Linux ZFS Installation"
+echo "==========================================${NC}\n"
+
 check_prerequisites
 
 print "Is this the first install or a second install to dualboot?"
@@ -438,7 +467,7 @@ fi
 ask "Name of the root dataset?"
 
 while zfs list "zroot/ROOT/$REPLY" &>/dev/null; do
-  echo "Dataset already exists. Choose another name."
+  echo -e "${YELLOW}⚠ WARNING: Dataset already exists. Choose another name.${NC}"
   ask "Name of the root dataset?"
 done
 
@@ -448,7 +477,7 @@ echo "$name_reply" > /tmp/root_dataset
 if [[ $install_reply == "dualboot" ]]; then
     import_pool
     if zfs list "zroot/ROOT/$name_reply" &>/dev/null; then
-        print "Dataset zroot/ROOT/$name_reply already exists! Aborting."
+        echo -e "${RED}✗ ERROR: Dataset zroot/ROOT/$name_reply already exists! Aborting.${NC}"
         exit 1
     fi    
 fi
@@ -467,8 +496,11 @@ copy_zpool_cache
 zfs_passphrase_backup
 
 # Begin System Installation
-echo -e "\e[32mConfiguration completed....."
-echo -e "\e[32mBeginning installation\033[0m"
+echo ""
+echo -e "${BOLD}${CYAN}=========================================="
+echo "Beginning System Installation"
+echo "==========================================${NC}"
+echo ""
 
 # Root dataset
 root_dataset=$(cat /tmp/root_dataset)
@@ -481,24 +513,27 @@ ARCH=x86_64
 print 'Copying xbps keys'
 mkdir -p /mnt/var/db/xbps/keys
 cp /var/db/xbps/keys/* /mnt/var/db/xbps/keys/
+echo -e "${GREEN}✓ XBPS keys copied${NC}"
 
 # Install base system
 print 'Installing Void Linux base system'
-XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" \
+XBPS_ARCH=$ARCH xbps-install -y -S -r -v /mnt -R "$REPO" \
   base-system \
   void-repo-nonfree
 
 # Verify base system installation
 if [[ ! -f /mnt/usr/bin/xbps-install ]]; then
-    echo "ERROR: Base system installation failed!" >&2
+    echo -e "${RED}✗ ERROR: Base system installation failed!${NC}" >&2
     exit 1
 fi
+echo -e "${GREEN}✓ Base system installed${NC}"
 
 # Init chroot mounts
 print 'Initializing chroot environment'
 mount --rbind /sys /mnt/sys && mount --make-rslave /mnt/sys
 mount --rbind /dev /mnt/dev && mount --make-rslave /mnt/dev
 mount --rbind /proc /mnt/proc && mount --make-rslave /mnt/proc
+echo -e "${GREEN}✓ Chroot environment initialized${NC}"
 
 # Disable gummiboot post install hooks
 echo "GUMMIBOOT_DISABLE=1" > /mnt/etc/default/gummiboot
@@ -522,19 +557,21 @@ packages=(
   dracut
   )
 
-XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" "${packages[@]}"
+XBPS_ARCH=$ARCH xbps-install -y -S -r -v /mnt -R "$REPO" "${packages[@]}"
 
 # Verify critical packages
 for pkg in zfs zfsbootmenu dracut; do
     if ! chroot /mnt xbps-query $pkg &>/dev/null; then
-        echo "ERROR: Package $pkg not installed!" >&2
+        echo -e "${RED}✗ ERROR: Package $pkg not installed!${NC}" >&2
         exit 1
     fi
 done
+echo -e "${GREEN}✓ Required packages installed${NC}"
 
 # Set hostname
-read -r -p 'Please enter hostname: ' hostname
+read -r -p "${BLUE}Please enter hostname: ${NC}" hostname
 echo "$hostname" > /mnt/etc/hostname
+echo -e "${GREEN}✓ Hostname set: $hostname${NC}"
 
 # Configure ZFS files
 print 'Copying ZFS configuration files'
@@ -545,10 +582,11 @@ cp -p /etc/zfs/zroot.key /mnt/etc/zfs/
 # Verify ZFS files were copied
 for file in /mnt/etc/hostid /mnt/etc/zfs/zpool.cache /mnt/etc/zfs/zroot.key; do
     if [[ ! -f "$file" ]]; then
-        echo "ERROR: Failed to copy $(basename $file)!" >&2
+        echo -e "${RED}✗ ERROR: Failed to copy $(basename $file)!${NC}" >&2
         exit 1
     fi
 done
+echo -e "${GREEN}✓ ZFS configuration files copied${NC}"
 
 # Configure iwd
 mkdir -p /mnt/etc/iwd
@@ -560,12 +598,14 @@ EnableNetworkConfiguration=true
 [Network]
 NameResolvingService=resolvconf
 EOF
+echo -e "${GREEN}✓ iwd configured${NC}"
 
 # Configure DNS
 cat >> /mnt/etc/resolvconf.conf <<"EOF"
 resolv_conf=/etc/resolv.conf
 name_servers="1.1.1.1 9.9.9.9"
 EOF
+echo -e "${GREEN}✓ DNS configured${NC}"
 
 # Enable IP forwarding
 cat > /mnt/etc/sysctl.conf <<"EOF"
@@ -581,7 +621,7 @@ echo 'KEYMAP="us"' > /mnt/etc/vconsole.conf
 
 # Set timezone
 print 'Set timezone'
-read -r -p "Enter timezone (e.g., Asia/Singapore): " timezone
+read -r -p "${BLUE}Enter timezone (e.g., Asia/Singapore): ${NC}" timezone
 timezone=${timezone:-"Asia/Singapore"}
 
 # Configure system
@@ -590,14 +630,16 @@ TIMEZONE="$timezone"
 HARDWARECLOCK="UTC"
 KEYMAP="us"
 EOF
+echo -e "${GREEN}✓ Timezone set: $timezone${NC}"
 
 # Set TTY font to smallest monospaced (Terminus size 8)
 print 'Configuring TTY font (Terminus 8x16)'
 cat >> /mnt/etc/vconsole.conf <<EOF
 FONT=ter-v16n
 EOF
+echo -e "${GREEN}✓ TTY font configured${NC}"
 
-# Set default shell to bash for root and new users - NEW
+# Set default shell to bash for root and new users
 print 'Setting default shell to bash'
 # Change root shell to bash
 chroot /mnt chsh -s /bin/bash root
@@ -613,7 +655,7 @@ SHELL=/bin/bash
 SKEL=/etc/skel
 CREATE_MAIL_SPOOL=yes
 EOF
-
+echo -e "${GREEN}✓ Default shell set to bash${NC}"
 
 # Configure dracut for ZFS
 print 'Configuring dracut'
@@ -637,14 +679,15 @@ compress="zstd"
 add_drivers+=" zfs "
 omit_dracutmodules+=" network plymouth "
 EOF
+echo -e "${GREEN}✓ dracut configured${NC}"
 
 # Configure username
 print 'Set your username'
-read -r -p "Username: " user
+read -r -p "${BLUE}Username: ${NC}" user
 
 # Validate username
 if [[ ! $user =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-    echo "ERROR: Invalid username!" >&2
+    echo -e "${RED}✗ ERROR: Invalid username!${NC}" >&2
     exit 1
 fi
 
@@ -695,6 +738,7 @@ chroot /mnt/ /bin/bash -e <<EOF
     fi
   fi
 EOF
+echo -e "${GREEN}✓ System configured in chroot${NC}"
 
 # Configure fstab
 print 'Configuring fstab'
@@ -712,6 +756,7 @@ EOF
 if [[ -f /tmp/swap_created ]] && [[ "$(cat /tmp/swap_created)" == "true" ]]; then
     echo "/dev/zvol/zroot/swap  none           swap    discard,pri=100                 0      0" >> /mnt/etc/fstab
 fi
+echo -e "${GREEN}✓ fstab configured${NC}"
 
 # Set root password
 print 'Set root password'
@@ -735,9 +780,10 @@ chmod 0440 /mnt/etc/sudoers.d/99-wheel
 
 # Verify sudo configuration
 if ! chroot /mnt visudo -c -f /etc/sudoers.d/99-wheel; then
-    echo "ERROR: Invalid sudo configuration!" >&2
+    echo -e "${RED}✗ ERROR: Invalid sudo configuration!${NC}" >&2
     exit 1
 fi
+echo -e "${GREEN}✓ sudo configured${NC}"
 
 # Configure ZFSBootMenu
 print 'Configuring ZFSBootMenu'
@@ -777,6 +823,7 @@ EOF
 
 # Set ZFS boot commandline
 zfs set org.zfsbootmenu:commandline="ro quiet nowatchdog loglevel=0 zbm.timeout=5" zroot/ROOT/"$root_dataset"
+echo -e "${GREEN}✓ ZFSBootMenu configured${NC}"
 
 # Generate ZFSBootMenu
 print 'Generating ZFSBootMenu and initramfs'
@@ -803,14 +850,16 @@ EOF
 
 # Verify critical boot files
 if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
-    echo "ERROR: ZFSBootMenu EFI file not found!" >&2
+    echo -e "${RED}✗ ERROR: ZFSBootMenu EFI file not found!${NC}" >&2
     exit 1
 fi
+echo -e "${GREEN}✓ ZFSBootMenu generated successfully${NC}"
 
 # Create backup if needed
 if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi ]]; then
     print "Creating ZFSBootMenu backup"
     cp /mnt/boot/efi/EFI/ZBM/vmlinuz.efi /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi
+    echo -e "${GREEN}✓ ZFSBootMenu backup created${NC}"
 fi
 
 # Set DISK for UEFI entries
@@ -820,7 +869,7 @@ else
     print 'Select the disk for boot entries:'
     select ENTRY in $(ls /dev/disk/by-id/); do
         DISK="/dev/disk/by-id/$ENTRY"
-        echo "Creating boot entries on $ENTRY."
+        echo -e "${BLUE}ℹ INFO: Creating boot entries on $ENTRY.${NC}"
         break
     done
 fi
@@ -837,6 +886,7 @@ if efibootmgr | grep -q "ZFSBootMenu"; then
     for entry in $(efibootmgr | grep "ZFSBootMenu" | sed -E 's/Boot([0-9]+).*/\1/'); do   
         efibootmgr -B -b "$entry"
     done
+    echo -e "${GREEN}✓ Old boot entries removed${NC}"
 fi
 
 # Create backup entry
@@ -847,7 +897,7 @@ if ! efibootmgr --disk "$DISK" \
   --label "ZFSBootMenu Backup" \
   --loader "\EFI\ZBM\vmlinuz-backup.efi" \
   --verbose; then
-    echo "WARNING: Failed to create backup boot entry!"
+    echo -e "${YELLOW}⚠ WARNING: Failed to create backup boot entry!${NC}"
 fi
 
 # Create main entry
@@ -858,9 +908,10 @@ if ! efibootmgr --disk "$DISK" \
   --label "ZFSBootMenu" \
   --loader "\EFI\ZBM\vmlinuz.efi" \
   --verbose; then
-    echo "ERROR: Failed to create main boot entry!" >&2
+    echo -e "${RED}✗ ERROR: Failed to create main boot entry!${NC}" >&2
     exit 1
 fi
+echo -e "${GREEN}✓ EFI boot entries created${NC}"
 
 # Display boot order
 print "Current boot order:"
@@ -871,7 +922,7 @@ print 'Cleaning up and unmounting'
 
 # Unmount EFI
 umount /mnt/boot/efi || {
-    echo "WARNING: Failed to unmount /mnt/boot/efi"
+    echo -e "${YELLOW}⚠ WARNING: Failed to unmount /mnt/boot/efi${NC}"
 }
 
 # Unmount bind mounts
@@ -886,37 +937,41 @@ zpool export zroot
 
 # Verify export
 if zpool list zroot &>/dev/null 2>&1; then
-    echo "WARNING: Pool still imported, forcing export..."
+    echo -e "${YELLOW}⚠ WARNING: Pool still imported, forcing export...${NC}"
     zpool export -f zroot
 fi
+echo -e "${GREEN}✓ Pool exported successfully${NC}"
 
 # Final verification
-print "Installation Verification"
-echo "================================"
-echo "✓ ZFS pool created: zroot"
-echo "✓ Root dataset: zroot/ROOT/$root_dataset"
-echo "✓ Encryption: AES-256-GCM"
-echo "✓ Hostid: $(cat /mnt/etc/hostid 2>/dev/null | od -An -tx1 || echo 'exported')"
-echo "✓ Cachefile: configured"
-echo "✓ ZFSBootMenu: installed"
-echo "✓ UEFI entries: created"
+echo ""
+echo -e "${BOLD}${CYAN}=========================================="
+echo "Installation Verification"
+echo "==========================================${NC}"
+echo -e "${GREEN}✓ ZFS pool created: zroot${NC}"
+echo -e "${GREEN}✓ Root dataset: zroot/ROOT/$root_dataset${NC}"
+echo -e "${GREEN}✓ Encryption: AES-256-GCM${NC}"
+echo -e "${GREEN}✓ Hostid: $(cat /mnt/etc/hostid 2>/dev/null | od -An -tx1 || echo 'exported')${NC}"
+echo -e "${GREEN}✓ Cachefile: configured${NC}"
+echo -e "${GREEN}✓ ZFSBootMenu: installed${NC}"
+echo -e "${GREEN}✓ UEFI entries: created${NC}"
 if [[ -f /tmp/swap_created ]] && [[ "$(cat /tmp/swap_created)" == "true" ]]; then
-    echo "✓ Swap: configured"
+    echo -e "${GREEN}✓ Swap: configured${NC}"
 fi
-echo "================================"
+echo -e "${BOLD}${CYAN}==========================================${NC}"
+echo ""
 
 # Finish
-echo -e '\n\e[32m╔════════════════════════════════════════╗\033[0m'
-echo -e '\e[32m║  Installation completed successfully!  ║\033[0m'
-echo -e '\e[32m╚════════════════════════════════════════╝\033[0m\n'
+echo -e "\n${GREEN}${BOLD}╔════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}${BOLD}║  Installation completed successfully!  ║${NC}"
+echo -e "${GREEN}${BOLD}╚════════════════════════════════════════╝${NC}\n"
 
 print "Next steps:"
-echo "1. Remove installation media"
-echo "2. Reboot the system"
-echo "3. At ZFSBootMenu, select your boot environment"
-echo "4. Enter encryption passphrase when prompted"
+echo -e "${BLUE}1. Remove installation media${NC}"
+echo -e "${BLUE}2. Reboot the system${NC}"
+echo -e "${BLUE}3. At ZFSBootMenu, select your boot environment${NC}"
+echo -e "${BLUE}4. Enter encryption passphrase when prompted${NC}"
 echo ""
-echo "To reboot now, run: reboot"
+echo -e "${CYAN}To reboot now, run: ${BOLD}reboot${NC}"
 
 # Cleanup temp files
 rm -f /tmp/disk /tmp/root_dataset /tmp/swap_created
