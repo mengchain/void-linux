@@ -762,11 +762,6 @@ chroot /mnt/ /bin/bash -e <<EOF
   ln -sf /etc/sv/elogind /etc/runit/runsvdir/default/
   ln -sf /etc/sv/polkitd /etc/runit/runsvdir/default/
   
-  # Enable ZFS services (CRITICAL FIX)
-  ln -sf /etc/sv/zfs-import /etc/runit/runsvdir/default/
-  ln -sf /etc/sv/zfs-mount /etc/runit/runsvdir/default/
-  ln -sf /etc/sv/zfs-zed /etc/runit/runsvdir/default/
-
   # Set timezone
   ln -sf "/usr/share/zoneinfo/$timezone" /etc/localtime
   
