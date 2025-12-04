@@ -155,34 +155,6 @@ check_zfs_availability() {
         success "ZFS commands are available"
     fi
     
-    # Check ZFS services - FIXED SIGPIPE
-    info "Checking ZFS services..."
-    local service_issues=0
-    
-    for service in zfs-import zfs-mount zfs-zed; do
-        local sv_status
-        sv_status=$(sv status "$service" 2>/dev/null || echo "not found")
-        
-        if echo "$sv_status" | grep -q "run"; then
-            success "Service $service is running"
-        else
-            warning "Service $service is not running properly"
-            service_issues=$((service_issues + 1))
-            
-            if confirm_repair "Restart service $service"; then
-                if execute_repair "Restarting $service" sv restart "$service"; then
-                    service_issues=$((service_issues - 1))
-                fi
-            fi
-        fi
-    done
-    
-    if [[ $service_issues -eq 0 ]]; then
-        success "All ZFS services are running"
-    else
-        warning "$service_issues ZFS service(s) have issues"
-    fi
-    
     return "$issues_found"
 }
 
