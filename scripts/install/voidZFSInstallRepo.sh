@@ -11,7 +11,7 @@ exec &> >(tee "configureNinstall.log")
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[1;94m'  
+BLUE='\033[1;94m'      # Light Blue (bright blue)
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
@@ -517,7 +517,7 @@ echo -e "${GREEN}✓ XBPS keys copied${NC}"
 
 # Install base system
 print 'Installing Void Linux base system'
-XBPS_ARCH=$ARCH xbps-install -y -S -r -v /mnt -R "$REPO" \
+XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" \
   base-system \
   void-repo-nonfree
 
@@ -557,7 +557,7 @@ packages=(
   dracut
   )
 
-XBPS_ARCH=$ARCH xbps-install -y -S -r -v /mnt -R "$REPO" "${packages[@]}"
+XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" "${packages[@]}"
 
 # Verify critical packages
 for pkg in zfs zfsbootmenu dracut; do
