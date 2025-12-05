@@ -232,7 +232,7 @@ verify_zfs_userland() {
     zfs_version_output=$(zfs version 2>/dev/null || true)
     
     if [ -n "$zfs_version_output" ]; then
-        ZFS_USERLAND_VERSION=$(echo "$zfs_version_output" | grep "^zfs-" | head -1 | awk '{print $2}' || echo "unknown")
+        ZFS_USERLAND_VERSION=$(echo "$zfs_version_output" | sed -n 's/.*zfs-\([0-9.]*\).*/\1/p' || echo "unknown")
         info "ZFS userland version: $ZFS_USERLAND_VERSION"
         
         # Check for version mismatch
@@ -573,21 +573,21 @@ verify_initramfs() {
         
         if [ -n "$initramfs_content" ]; then
             # Check for ZFS module
-            if echo "$initramfs_content" | grep -q "zfs.ko"; then
+            if [[ "$initramfs_content" == *"zfs.ko"* ]]; then
                 success "ZFS module found in initramfs"
             else
                 error "ZFS module NOT found in initramfs!"
             fi
             
             # Check for encryption key
-            if echo "$initramfs_content" | grep -q "zroot.key"; then
+            if [[ "$initramfs_content" == *"zroot.key"* ]]; then
                 success "ZFS encryption key found in initramfs"
             else
                 info "ZFS encryption key not in initramfs (normal if not using encryption)"
             fi
             
             # Check for hostid
-            if echo "$initramfs_content" | grep -q -E "etc/hostid|hostid"; then
+            if  [[ "$initramfs_content" == *"etc/hostid|hostid"* ]]; then
                 success "Host ID found in initramfs"
             else
                 warning "Host ID not found in initramfs"
