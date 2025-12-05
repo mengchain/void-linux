@@ -80,7 +80,7 @@ ask() {
 }
 
 menu() {
-    PS3="${BLUE}> Choose a number: ${NC}"
+    PS3="$(printf "${BLUE}> Choose a number: ${NC}")"
     select i in "$@"; do
         echo "$i"
         break
@@ -143,7 +143,7 @@ collect_installation_type() {
     info "Select installation mode:"
     echo ""
     
-    PS3="${BLUE}Choose installation type: ${NC}"
+    PS3="$(printf "${BLUE}Choose installation type: ${NC}")"
     select type in "First Install (New System)" "Dual Boot (Add to Existing ZFS)"; do
         case "$type" in
             "First Install (New System)")
@@ -195,7 +195,7 @@ collect_disk_selection() {
     done
     echo ""
     
-    PS3="${BLUE}Select installation disk: ${NC}"
+    PS3="$(printf "${BLUE}Select installation disk: ${NC}")"
     select ENTRY in "${disks[@]}"; do
         if [[ -n $ENTRY ]]; then
             SELECTED_DISK="/dev/disk/by-id/$ENTRY"
@@ -234,10 +234,12 @@ collect_zfs_passphrase() {
     echo ""
     
     while true; do
-        read -r -p "${BLUE}Enter ZFS encryption passphrase: ${NC}" -s pass1
-        echo
-        read -r -p "${BLUE}Confirm passphrase: ${NC}" -s pass2
-        echo
+        echo -e -n "${BLUE}Enter ZFS encryption passphrase: ${NC}"
+		read -r -s pass1
+		echo
+        echo -e -n "${BLUE}Confirm passphrase: ${NC}"
+		read -r -s pass2
+		echo
         
         if [[ "$pass1" == "$pass2" ]]; then
             if [[ ${#pass1} -lt 8 ]]; then
@@ -262,8 +264,9 @@ collect_dataset_name() {
     echo ""
     
     while true; do
-        read -r -p "${BLUE}Root dataset name: ${NC}" dataset_name
-        
+        echo -e -n "${BLUE}Root dataset name: ${NC}"
+		read -r -s dataset_name
+		echo
         # Validate name
         if [[ -z "$dataset_name" ]]; then
             warning "Dataset name cannot be empty"
@@ -299,9 +302,10 @@ collect_swap_configuration() {
         if ask_yes_no "Do you want to create a swap space?" "y"; then
             CREATE_SWAP=true
             
-            while true; do
-                read -r -p "${BLUE}Enter swap size (e.g., 4G, 8G, 16G): ${NC}" swap_size
-                
+            while true; do                
+                echo -e -n "${BLUE}Enter swap size (e.g., 4G, 8G, 16G): ${NC}"
+				read -r -s swap_size
+				echo				
                 if [[ $swap_size =~ ^[0-9]+[GMgm]$ ]]; then
                     SWAP_SIZE="$swap_size"
                     success "Swap size: $SWAP_SIZE"
@@ -323,9 +327,10 @@ collect_system_configuration() {
     echo ""
     
     # Hostname
-    while true; do
-        read -r -p "${BLUE}Enter hostname: ${NC}" hostname_input
-        
+    while true; do        
+        echo -e -n "${BLUE}Enter hostname: ${NC}"
+		read -r -s hostname_input
+		echo
         if [[ -z "$hostname_input" ]]; then
             warning "Hostname cannot be empty"
             continue
@@ -344,15 +349,18 @@ collect_system_configuration() {
     
     # Timezone
     info "Enter timezone (e.g., America/New_York, Europe/London, Asia/Singapore)"
-    read -r -p "${BLUE}Timezone [Asia/Singapore]: ${NC}" timezone_input
+	echo -e -n "${BLUE}Timezone [Asia/Singapore]: ${NC}"
+	read -r -s timezone_input
+	echo
     TIMEZONE="${timezone_input:-Asia/Singapore}"
     success "Timezone: $TIMEZONE"
     echo ""
     
     # Username
     while true; do
-        read -r -p "${BLUE}Enter username: ${NC}" username_input
-        
+        echo -e -n "${BLUE}Enter username: ${NC}"
+		read -r -s username_input
+
         if [[ -z "$username_input" ]]; then
             warning "Username cannot be empty"
             continue
@@ -378,9 +386,11 @@ collect_passwords() {
     # Root password
     info "Set root password"
     while true; do
-        read -r -p "${BLUE}Enter root password: ${NC}" -s root_pass1
+		echo -e -n "${BLUE}Enter root password: ${NC}"
+		read -r -s root_pass1
         echo
-        read -r -p "${BLUE}Confirm root password: ${NC}" -s root_pass2
+		echo -e -n "${BLUE}Confirm root password: ${NC}"
+		read -r -s root_pass2		
         echo
         
         if [[ "$root_pass1" == "$root_pass2" ]]; then
@@ -400,11 +410,12 @@ collect_passwords() {
     # User password
     info "Set password for user: $USERNAME"
     while true; do
-        read -r -p "${BLUE}Enter user password: ${NC}" -s user_pass1
-        echo
-        read -r -p "${BLUE}Confirm user password: ${NC}" -s user_pass2
-        echo
-        
+		echo -e -n "${BLUE}Enter user password: ${NC}"
+		read -r -s user_pass1
+		echo  
+		echo -e -n "${BLUE}Confirm user password: ${NC}"
+		read -r -s user_pass2
+		echo  
         if [[ "$user_pass1" == "$user_pass2" ]]; then
             if [[ ${#user_pass1} -lt 6 ]]; then
                 warning "Password must be at least 6 characters!"
