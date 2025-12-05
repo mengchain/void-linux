@@ -571,7 +571,7 @@ check_initramfs() {
             
             if [[ -n "$initramfs_content" ]]; then
                 # Check for ZFS module
-                if echo "$initramfs_content" | grep -q "zfs.ko"; then
+                if [[ "$initramfs_content" == *"zfs.ko"* ]]; then
                     success "ZFS module found in initramfs"
                 else
                     error "ZFS module NOT found in initramfs"
@@ -585,7 +585,7 @@ check_initramfs() {
                 fi
                 
                 # Check for encryption key
-                if echo "$initramfs_content" | grep -q "zroot.key"; then
+                if [[ "$initramfs_content" == *"zroot.key"* ]]; then
                     success "ZFS encryption key found in initramfs"
                 elif [[ -f /etc/zfs/zroot.key ]]; then
                     warning "ZFS encryption key exists but not in initramfs"
@@ -599,7 +599,7 @@ check_initramfs() {
                 fi
                 
                 # Check for hostid
-                if echo "$initramfs_content" | grep -q -E "etc/hostid|hostid"; then
+                if  [[ "$initramfs_content" == *"etc/hostid|hostid"* ]]; then
                     success "Host ID found in initramfs"
                 else
                     warning "Host ID not found in initramfs"
