@@ -599,7 +599,7 @@ check_initramfs() {
                 fi
                 
                 # Check for hostid
-                if  [[ "$initramfs_content" == *"etc/hostid|hostid"* ]]; then
+                if  [[ "$initramfs_content" == *"etc/hostid"* ]]; then
                     success "Host ID found in initramfs"
                 else
                     warning "Host ID not found in initramfs"
