@@ -37,6 +37,7 @@ fi
 # ============================================
 LOG_FILE="configureNinstall.log"
 FONT="drdos8x14"
+setfont "$FONT"
 
 # Script metadata
 SCRIPT_NAME="Void Linux ZFS Installation"
