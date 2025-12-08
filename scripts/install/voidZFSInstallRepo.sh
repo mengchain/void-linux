@@ -950,6 +950,7 @@ configure_system() {
 TIMEZONE="$TIMEZONE"
 HARDWARECLOCK="UTC"
 KEYMAP="us"
+FONT="$FONT"
 EOF
     
     # Configure vconsole
