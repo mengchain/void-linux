@@ -1,14 +1,15 @@
-#!/bin/bash
-# zfs-services-manager.sh
-# Combined audit and setup script for ZFS services on Void Linux
-# Version: 2.0 - Refactored to use common.sh library
+#!/usr/bin/env bash
+# filepath: zfs-services-manager.sh
+# ZFS Services Manager for Void Linux
+# Version: 1.0
+# Description: Manages ZFS-related runit services
+# Compatible with voidZFSInstallRepo.sh installation
 
 set -euo pipefail
 
 # ============================================
 # Load Common Library
 # ============================================
-# Determine script and library directories
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${LIB_DIR:-/usr/local/lib/zfs-scripts}"
 
@@ -23,11 +24,6 @@ elif [[ -f "$SCRIPT_DIR/common.sh" ]]; then
     source "$SCRIPT_DIR/common.sh"
 else
     echo "ERROR: Cannot find common.sh library"
-    echo "Searched locations:"
-    echo "  - $LIB_DIR/common.sh"
-    echo "  - $SCRIPT_DIR/../lib/common.sh"
-    echo "  - $SCRIPT_DIR/common.sh"
-    echo ""
     echo "Please install common.sh to: $LIB_DIR/"
     exit 1
 fi
@@ -35,493 +31,752 @@ fi
 # ============================================
 # Script Configuration
 # ============================================
-# Set custom log file for this script
-LOG_FILE="/var/log/zfs-services-manager.log"
-
-# Script metadata
+LOG_FILE="/var/log/zfs_services.log"
 SCRIPT_NAME="ZFS Services Manager"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="1.0"
+
+# Redirect all output to both console and log file
+exec &> >(tee -a "$LOG_FILE")
 
 # ============================================
-# Audit Functions
+# Path Constants (MUST match installation scripts)
 # ============================================
-audit_service_existence() {
-    header "1. ZFS Services Availability"
+# ZFS Core Files
+readonly ZFS_KEY_FILE="/etc/zfs/zroot.key"
+readonly ZFS_CACHE_FILE="/etc/zfs/zpool.cache"
+readonly HOSTID_FILE="/etc/hostid"
+
+# Service directories (Void Linux runit)
+readonly SERVICE_DIR="/etc/sv"
+readonly RUNSVDIR="/var/service"
+
+# ZFS Services
+readonly ZFS_SERVICES=(
+    "zfs-import"
+    "zfs-mount"
+    "zfs-share"
+    "zfs-zed"
+)
+
+# Optional services
+readonly OPTIONAL_SERVICES=(
+    "zfs-scrub"
+)
+
+# ============================================
+# Service Status Functions
+# ============================================
+get_service_status() {
+    local service="$1"
+    local service_path="$RUNSVDIR/$service"
     
-    local services=("zed" "zfs-import" "zfs-mount" "zfs-share")
-    local found_services=()
-    
-    for service in "${services[@]}"; do
-        if [[ -d "/etc/sv/$service" ]]; then
-            local enabled_status="disabled"
-            local running_status="stopped"
-            
-            if [[ -L "/etc/runit/runsvdir/default/$service" ]]; then
-                enabled_status="ENABLED"
-            fi
-            
-            if sv status "$service" 2>/dev/null | grep -q "^run:"; then
-                running_status="RUNNING"
-            fi
-            
-            bullet "$service: EXISTS | $enabled_status | $running_status"
-            found_services+=("$service")
-        else
-            indent 1 "❌ $service: DOES NOT EXIST"
-        fi
-    done
-    
-    echo ""
-    
-    if [[ ${#found_services[@]} -eq 0 ]]; then
-        error "No ZFS services found!"
-        error "Is ZFS installed? Try: xbps-install -S zfs"
+    if [[ ! -L "$service_path" ]]; then
+        echo "disabled"
         return 1
     fi
     
-    success "Found ${#found_services[@]} ZFS service(s)"
-    return 0
+    if sv status "$service" 2>/dev/null | grep -q "^run:"; then
+        echo "running"
+        return 0
+    elif sv status "$service" 2>/dev/null | grep -q "^down:"; then
+        echo "stopped"
+        return 2
+    else
+        echo "unknown"
+        return 3
+    fi
 }
 
-audit_pools() {
-    header "2. ZFS Pool Status"
+check_service_exists() {
+    local service="$1"
     
-    if ! command_exists zpool; then
-        error "zpool command not found"
-        return 1
-    fi
-    
-    local pool_count
-    pool_count=$(zpool list -H 2>/dev/null | wc -l)
-    
-    if [[ $pool_count -eq 0 ]]; then
-        warning "No ZFS pools found"
-        return 1
-    fi
-    
-    info "Found $pool_count pool(s)"
-    echo ""
-    
-    zpool list -H -o name,health,size,allocated,free 2>/dev/null | while IFS=$'\t' read -r pool health size alloc free; do
-        subheader "Pool: $pool"
-        
-        if [[ "$health" == "ONLINE" ]]; then
-            print_status "ok" "Health: $health"
-        else
-            print_status "fail" "Health: $health"
-        fi
-        
-        indent 1 "Size: $size (Allocated: $alloc, Free: $free)"
-        
-        # Check if this is the boot pool
-        local bootfs
-        bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "-")
-        if [[ "$bootfs" != "-" ]]; then
-            indent 1 "Type: ROOT POOL (bootfs: $bootfs)"
-        else
-            indent 1 "Type: Data pool"
-        fi
-        
-        # Check cache file
-        local cachefile
-        cachefile=$(zpool get -H -o value cachefile "$pool" 2>/dev/null || echo "-")
-        if [[ "$cachefile" != "-" ]] && [[ "$cachefile" != "none" ]]; then
-            print_status "ok" "Cache file: $cachefile (auto-import enabled)"
-        else
-            print_status "warn" "Cache file: None (requires zfs-import service)"
-        fi
-        
-        echo ""
-    done
-    
-    return 0
-}
-
-audit_datasets() {
-    header "3. ZFS Dataset Mount Configuration"
-    
-    if ! command_exists zfs; then
-        error "zfs command not found"
-        return 1
-    fi
-    
-    local dataset_count
-    dataset_count=$(zfs list -H 2>/dev/null | wc -l)
-    
-    if [[ $dataset_count -eq 0 ]]; then
-        warning "No ZFS datasets found"
-        return 1
-    fi
-    
-    info "Found $dataset_count dataset(s)"
-    echo ""
-    
-    zfs list -H -o name,mountpoint,canmount,mounted -r 2>/dev/null | while IFS=$'\t' read -r dataset mountpoint canmount mounted; do
-        local mount_method=""
-        local needs_service=""
-        
-        case "$mountpoint" in
-            none|-)
-                mount_method="Not mounted"
-                ;;
-            legacy)
-                mount_method="Via /etc/fstab (legacy)"
-                ;;
-            /*)
-                case "$canmount" in
-                    on)
-                        mount_method="Via zfs-mount (automatic)"
-                        needs_service="zfs-mount"
-                        ;;
-                    noauto)
-                        mount_method="Manual mount required"
-                        ;;
-                    off)
-                        mount_method="Cannot mount (canmount=off)"
-                        ;;
-                esac
-                ;;
-        esac
-        
-        subheader "$dataset"
-        indent 1 "Mountpoint: $mountpoint"
-        indent 1 "Canmount: $canmount"
-        indent 1 "Currently mounted: $mounted"
-        indent 1 "Method: $mount_method"
-        [[ -n "$needs_service" ]] && indent 1 "Requires: $needs_service"
-        echo ""
-    done
-    
-    return 0
-}
-
-analyze_requirements() {
-    header "4. Service Requirements Analysis"
-    
-    local needs_import=false
-    local needs_mount=false
-    local needs_share=false
-    
-    # Determine root pool
-    local root_pool
-    root_pool=$(zpool list -H -o name,bootfs 2>/dev/null | awk '$2 != "-" {print $1}' | head -n1)
-    
-    if [[ -z "$root_pool" ]]; then
-        warning "Could not determine root pool"
-        root_pool="zroot"  # Assume default
-    fi
-    
-    info "Root pool detected: $root_pool"
-    echo ""
-    
-    # Check for data pools (non-root pools)
-    local all_pools
-    all_pools=$(zpool list -H -o name 2>/dev/null || echo "")
-    local pool_count
-    pool_count=$(echo "$all_pools" | grep -c . || echo "0")
-    
-    subheader "Analysis Results:"
-    echo ""
-    
-    # ZED - Always needed
-    bullet "zed (ZFS Event Daemon):"
-    indent 2 "Status: ✅ ALWAYS REQUIRED"
-    indent 2 "Reason: Monitors ZFS events, handles errors, sends notifications"
-    echo ""
-    
-    # zfs-import - Check if needed
-    bullet "zfs-import (Pool Import):"
-    if [[ $pool_count -gt 1 ]]; then
-        needs_import=true
-        indent 2 "Status: ✅ REQUIRED"
-        indent 2 "Reason: You have $pool_count pools, including data pools:"
-        echo "$all_pools" | while read -r pool; do
-            if [[ "$pool" != "$root_pool" ]]; then
-                indent 3 "- $pool (data pool, needs auto-import)"
-            else
-                indent 3 "- $pool (root pool, imported by initramfs)"
-            fi
-        done
+    if [[ -d "$SERVICE_DIR/$service" ]]; then
+        return 0
     else
-        indent 2 "Status: ⚠️  NOT REQUIRED"
-        indent 2 "Reason: Only root pool ($root_pool) present"
-        indent 2 "        Root pool is imported by initramfs during boot"
+        return 1
     fi
-    echo ""
-    
-    # zfs-mount - Check if needed
-    bullet "zfs-mount (Filesystem Mount):"
-    local native_mounts
-    native_mounts=$(zfs list -H -o name,mountpoint,canmount 2>/dev/null | awk '$2 ~ /^\// && $2 != "/" && $3 == "on"' | wc -l)
-    
-    if [[ $native_mounts -gt 0 ]]; then
-        needs_mount=true
-        indent 2 "Status: ✅ REQUIRED"
-        indent 2 "Reason: $native_mounts dataset(s) with native mountpoints need automatic mounting:"
-        zfs list -H -o name,mountpoint,canmount 2>/dev/null | awk '$2 ~ /^\// && $2 != "/" && $3 == "on" {print "        - " $1 " → " $2}'
-    else
-        indent 2 "Status: ⚠️  NOT REQUIRED"
-        indent 2 "Reason: No datasets with native mountpoints requiring auto-mount"
-        indent 2 "        (All use legacy mounts or are manually managed)"
-    fi
-    echo ""
-    
-    # zfs-share - Check if needed
-    bullet "zfs-share (NFS/SMB Sharing):"
-    local shared_datasets
-    shared_datasets=$(zfs list -H -o name,sharenfs,sharesmb 2>/dev/null | awk '$2 != "off" || $3 != "off"' | wc -l)
-    
-    if [[ $shared_datasets -gt 0 ]]; then
-        needs_share=true
-        indent 2 "Status: ✅ REQUIRED"
-        indent 2 "Reason: $shared_datasets dataset(s) configured for sharing"
-    else
-        indent 2 "Status: ⚠️  NOT REQUIRED"
-        indent 2 "Reason: No datasets configured for NFS or SMB sharing"
-    fi
-    echo ""
-    
-    # Store requirements in temp files
-    echo "$needs_import" > /tmp/zfs_needs_import
-    echo "$needs_mount" > /tmp/zfs_needs_mount
-    echo "$needs_share" > /tmp/zfs_needs_share
 }
 
 # ============================================
-# Setup Functions
+# Service Management Functions
 # ============================================
 enable_service() {
     local service="$1"
-    local reason="$2"
     
-    if [[ ! -d "/etc/sv/$service" ]]; then
-        error "Service $service does not exist at /etc/sv/$service"
+    if ! check_service_exists "$service"; then
+        error "Service directory not found: $SERVICE_DIR/$service"
         return 1
     fi
     
+    local service_link="$RUNSVDIR/$service"
+    
+    if [[ -L "$service_link" ]]; then
+        info "Service already enabled: $service"
+        return 0
+    fi
+    
     info "Enabling service: $service"
-    debug "Reason: $reason"
     
-    # Create symlink if doesn't exist
-    if [[ ! -L "/etc/runit/runsvdir/default/$service" ]]; then
-        if ln -sf "/etc/sv/$service" "/etc/runit/runsvdir/default/" 2>/dev/null; then
-            success "Service $service enabled"
-        else
-            error "Failed to enable $service"
-            return 1
-        fi
+    if ln -s "$SERVICE_DIR/$service" "$service_link"; then
+        success "Service enabled: $service"
+        return 0
     else
-        info "Service $service already enabled"
+        error "Failed to enable service: $service"
+        return 1
     fi
-    
-    # Start service
-    if sv status "$service" 2>/dev/null | grep -q "^run:"; then
-        info "Service $service already running"
-    else
-        info "Starting service $service..."
-        if sv up "$service" 2>/dev/null; then
-            sleep 1
-            if sv status "$service" 2>/dev/null | grep -q "^run:"; then
-                success "Service $service started"
-            else
-                warning "Service $service enabled but not running (will start on next boot)"
-            fi
-        else
-            warning "Failed to start $service (may start on next boot)"
-        fi
-    fi
-    echo ""
 }
 
 disable_service() {
     local service="$1"
-    local reason="$2"
+    local service_link="$RUNSVDIR/$service"
     
-    info "Service $service not needed"
-    debug "Reason: $reason"
-    
-    if [[ -L "/etc/runit/runsvdir/default/$service" ]]; then
-        warning "Service is currently enabled but not required"
-        if ask_yes_no "Disable it?" "n"; then
-            if rm "/etc/runit/runsvdir/default/$service" 2>/dev/null; then
-                sv down "$service" 2>/dev/null || true
-                success "Service $service disabled"
-            else
-                error "Failed to disable $service"
-                return 1
-            fi
-        else
-            info "Keeping service enabled as per user choice"
-        fi
-    else
-        info "Service already disabled"
-    fi
-    echo ""
-}
-
-setup_services() {
-    header "5. Service Setup"
-    
-    # Read requirements from analysis
-    local needs_import
-    local needs_mount
-    local needs_share
-    
-    needs_import=$(cat /tmp/zfs_needs_import 2>/dev/null || echo "false")
-    needs_mount=$(cat /tmp/zfs_needs_mount 2>/dev/null || echo "false")
-    needs_share=$(cat /tmp/zfs_needs_share 2>/dev/null || echo "false")
-    
-    # Clean up temp files
-    rm -f /tmp/zfs_needs_import /tmp/zfs_needs_mount /tmp/zfs_needs_share
-    
-    info "Configuring ZFS services based on analysis..."
-    echo ""
-    
-    # ZED - Always enable
-    enable_service "zed" "Event monitoring and error handling (always required)"
-    
-    # zfs-import - Conditional
-    if [[ "$needs_import" == "true" ]]; then
-        enable_service "zfs-import" "Data pools need automatic import at boot"
-    else
-        disable_service "zfs-import" "Only root pool present (imported by initramfs)"
+    if [[ ! -L "$service_link" ]]; then
+        info "Service already disabled: $service"
+        return 0
     fi
     
-    # zfs-mount - Conditional
-    if [[ "$needs_mount" == "true" ]]; then
-        enable_service "zfs-mount" "Datasets with native mountpoints need automatic mounting"
-    else
-        disable_service "zfs-mount" "No datasets require automatic mounting"
+    info "Disabling service: $service"
+    
+    # Stop service first
+    if sv stop "$service" 2>/dev/null; then
+        debug "Service stopped: $service"
     fi
     
-    # zfs-share - Conditional
-    if [[ -d "/etc/sv/zfs-share" ]]; then
-        if [[ "$needs_share" == "true" ]]; then
-            enable_service "zfs-share" "Datasets configured for NFS/SMB sharing"
-        else
-            disable_service "zfs-share" "No datasets configured for sharing"
-        fi
+    # Remove symlink
+    if rm -f "$service_link"; then
+        success "Service disabled: $service"
+        return 0
+    else
+        error "Failed to disable service: $service"
+        return 1
     fi
 }
 
-verify_setup() {
-    header "6. Verification"
+start_service() {
+    local service="$1"
     
-    info "Checking service status..."
+    if ! check_service_exists "$service"; then
+        error "Service not found: $service"
+        return 1
+    fi
+    
+    local status
+    status=$(get_service_status "$service")
+    
+    if [[ "$status" == "disabled" ]]; then
+        error "Service is disabled. Enable it first: $service"
+        return 1
+    fi
+    
+    if [[ "$status" == "running" ]]; then
+        info "Service already running: $service"
+        return 0
+    fi
+    
+    info "Starting service: $service"
+    
+    if sv start "$service" 2>/dev/null; then
+        sleep 2
+        status=$(get_service_status "$service")
+        
+        if [[ "$status" == "running" ]]; then
+            success "Service started: $service"
+            return 0
+        else
+            error "Service failed to start: $service"
+            return 1
+        fi
+    else
+        error "Failed to start service: $service"
+        return 1
+    fi
+}
+
+stop_service() {
+    local service="$1"
+    
+    local status
+    status=$(get_service_status "$service")
+    
+    if [[ "$status" == "disabled" ]]; then
+        info "Service is disabled: $service"
+        return 0
+    fi
+    
+    if [[ "$status" == "stopped" ]] || [[ "$status" == "unknown" ]]; then
+        info "Service already stopped: $service"
+        return 0
+    fi
+    
+    info "Stopping service: $service"
+    
+    if sv stop "$service" 2>/dev/null; then
+        sleep 1
+        success "Service stopped: $service"
+        return 0
+    else
+        error "Failed to stop service: $service"
+        return 1
+    fi
+}
+
+restart_service() {
+    local service="$1"
+    
+    info "Restarting service: $service"
+    
+    if sv restart "$service" 2>/dev/null; then
+        sleep 2
+        
+        local status
+        status=$(get_service_status "$service")
+        
+        if [[ "$status" == "running" ]]; then
+            success "Service restarted: $service"
+            return 0
+        else
+            error "Service failed to restart: $service"
+            return 1
+        fi
+    else
+        error "Failed to restart service: $service"
+        return 1
+    fi
+}
+
+# ============================================
+# Status Display Functions
+# ============================================
+show_service_status() {
+    local service="$1"
+    local status
+    status=$(get_service_status "$service")
+    
+    case "$status" in
+        running)
+            print_status "ok" "$service: running"
+            ;;
+        stopped)
+            print_status "warn" "$service: stopped"
+            ;;
+        disabled)
+            print_status "skip" "$service: disabled"
+            ;;
+        *)
+            print_status "error" "$service: unknown"
+            ;;
+    esac
+}
+
+list_all_services() {
+    header "ZFS Services Status"
+    
+    subheader "Core ZFS Services:"
     echo ""
     
-    local services=("zed" "zfs-import" "zfs-mount" "zfs-share")
-    local all_ok=true
+    for service in "${ZFS_SERVICES[@]}"; do
+        show_service_status "$service"
+    done
     
-    for service in "${services[@]}"; do
-        if [[ ! -d "/etc/sv/$service" ]]; then
-            continue
-        fi
-        
-        local enabled=false
-        local running=false
-        
-        [[ -L "/etc/runit/runsvdir/default/$service" ]] && enabled=true
-        sv status "$service" 2>/dev/null | grep -q "^run:" && running=true
-        
-        if $enabled && $running; then
-            print_status "ok" "$service: Enabled and Running"
-        elif $enabled && ! $running; then
-            print_status "warn" "$service: Enabled but Not Running"
-            warning "Service $service is enabled but not running"
-            all_ok=false
-        elif ! $enabled && $running; then
-            print_status "warn" "$service: Running but Not Enabled"
-            info "Service $service is running but won't start on boot"
+    echo ""
+    subheader "Optional ZFS Services:"
+    echo ""
+    
+    for service in "${OPTIONAL_SERVICES[@]}"; do
+        if check_service_exists "$service"; then
+            show_service_status "$service"
         else
-            print_status "skip" "$service: Disabled"
+            print_status "skip" "$service: not installed"
+        fi
+    done
+    
+    echo ""
+}
+
+show_service_details() {
+    local service="$1"
+    
+    header "Service Details: $service"
+    
+    if ! check_service_exists "$service"; then
+        error "Service not found: $service"
+        return 1
+    fi
+    
+    # Basic info
+    info "Service directory: $SERVICE_DIR/$service"
+    
+    local service_link="$RUNSVDIR/$service"
+    if [[ -L "$service_link" ]]; then
+        info "Enabled: yes"
+        info "Service link: $service_link"
+    else
+        warning "Enabled: no"
+    fi
+    
+    echo ""
+    
+    # Status from sv
+    subheader "Service Status:"
+    echo ""
+    sv status "$service" 2>/dev/null || echo "Service not running"
+    
+    echo ""
+    
+    # Log file check
+    local log_file="/var/log/socklog/svlogd/$service/current"
+    if [[ -f "$log_file" ]]; then
+        subheader "Recent Log Entries (last 10):"
+        echo ""
+        tail -n 10 "$log_file" 2>/dev/null || warning "Could not read log file"
+    else
+        warning "Log file not found: $log_file"
+    fi
+    
+    echo ""
+}
+
+# ============================================
+# Batch Operations
+# ============================================
+enable_all_services() {
+    header "Enabling All ZFS Services"
+    
+    local failed=0
+    
+    for service in "${ZFS_SERVICES[@]}"; do
+        if enable_service "$service"; then
+            debug "Enabled: $service"
+        else
+            warning "Failed to enable: $service"
+            failed=$((failed + 1))
         fi
     done
     
     echo ""
     
-    if $all_ok; then
-        success "All enabled services are running correctly"
+    if [[ $failed -eq 0 ]]; then
+        success "All ZFS services enabled successfully"
+        return 0
     else
-        warning "Some services may need attention"
+        warning "$failed service(s) failed to enable"
+        return 1
     fi
 }
 
-show_summary() {
-    header "Summary"
+disable_all_services() {
+    header "Disabling All ZFS Services"
     
-    success "ZFS Service Configuration Complete!"
-    echo ""
+    if ! confirm_action "This will disable all ZFS services" "n"; then
+        info "Operation cancelled"
+        return 1
+    fi
     
-    subheader "Configured Services:"
-    echo ""
+    local failed=0
     
-    for service in zed zfs-import zfs-mount zfs-share; do
-        if [[ -L "/etc/runit/runsvdir/default/$service" ]]; then
-            bullet "$service (enabled)"
-        elif [[ -d "/etc/sv/$service" ]]; then
-            indent 1 "⊝ $service (available but disabled)"
+    for service in "${ZFS_SERVICES[@]}"; do
+        if disable_service "$service"; then
+            debug "Disabled: $service"
+        else
+            warning "Failed to disable: $service"
+            failed=$((failed + 1))
         fi
     done
     
     echo ""
+    
+    if [[ $failed -eq 0 ]]; then
+        success "All ZFS services disabled successfully"
+        return 0
+    else
+        warning "$failed service(s) failed to disable"
+        return 1
+    fi
+}
+
+start_all_services() {
+    header "Starting All ZFS Services"
+    
+    local failed=0
+    
+    # Start in dependency order
+    local ordered_services=(
+        "zfs-import"    # Import pools first
+        "zfs-mount"     # Mount datasets
+        "zfs-share"     # Share datasets (NFS/SMB)
+        "zfs-zed"       # ZFS Event Daemon
+    )
+    
+    for service in "${ordered_services[@]}"; do
+        if start_service "$service"; then
+            debug "Started: $service"
+        else
+            warning "Failed to start: $service"
+            failed=$((failed + 1))
+        fi
+        
+        # Brief delay between services
+        sleep 1
+    done
+    
+    echo ""
+    
+    if [[ $failed -eq 0 ]]; then
+        success "All ZFS services started successfully"
+        return 0
+    else
+        warning "$failed service(s) failed to start"
+        return 1
+    fi
+}
+
+stop_all_services() {
+    header "Stopping All ZFS Services"
+    
+    if ! confirm_action "This will stop all ZFS services" "n"; then
+        info "Operation cancelled"
+        return 1
+    fi
+    
+    local failed=0
+    
+    # Stop in reverse dependency order
+    local ordered_services=(
+        "zfs-zed"       # Stop daemon first
+        "zfs-share"     # Unshare
+        "zfs-mount"     # Unmount (but datasets may remain mounted)
+        "zfs-import"    # Stop import service
+    )
+    
+    for service in "${ordered_services[@]}"; do
+        if stop_service "$service"; then
+            debug "Stopped: $service"
+        else
+            warning "Failed to stop: $service"
+            failed=$((failed + 1))
+        fi
+        
+        # Brief delay between services
+        sleep 1
+    done
+    
+    echo ""
+    
+    if [[ $failed -eq 0 ]]; then
+        success "All ZFS services stopped successfully"
+        return 0
+    else
+        warning "$failed service(s) failed to stop"
+        return 1
+    fi
+}
+
+restart_all_services() {
+    header "Restarting All ZFS Services"
+    
+    if ! confirm_action "This will restart all ZFS services" "n"; then
+        info "Operation cancelled"
+        return 1
+    fi
+    
+    # Stop all first
+    stop_all_services
+    
+    echo ""
+    separator "-"
+    echo ""
+    
+    # Then start all
+    start_all_services
+}
+
+# ============================================
+# Verification Functions
+# ============================================
+verify_zfs_services() {
+    header "Verifying ZFS Services Configuration"
+    
+    local issues_found=0
+    
+    # Check if ZFS module is loaded
+    subheader "ZFS Module:"
+    echo ""
+    
+    if lsmod 2>/dev/null | grep -q "^zfs "; then
+        success "ZFS kernel module is loaded"
+    else
+        error "ZFS kernel module is NOT loaded"
+        info "Load with: modprobe zfs"
+        issues_found=$((issues_found + 1))
+    fi
+    
+    echo ""
+    
+    # Check service directories exist
+    subheader "Service Directories:"
+    echo ""
+    
+    for service in "${ZFS_SERVICES[@]}"; do
+        if [[ -d "$SERVICE_DIR/$service" ]]; then
+            print_status "ok" "$service directory exists"
+        else
+            print_status "error" "$service directory missing"
+            issues_found=$((issues_found + 1))
+        fi
+    done
+    
+    echo ""
+    
+    # Check critical files
+    subheader "Critical Files:"
+    echo ""
+    
+    if [[ -f "$HOSTID_FILE" ]]; then
+        print_status "ok" "Host ID file exists"
+    else
+        print_status "error" "Host ID file missing: $HOSTID_FILE"
+        info "Generate with: zgenhostid"
+        issues_found=$((issues_found + 1))
+    fi
+    
+    if [[ -f "$ZFS_CACHE_FILE" ]]; then
+        print_status "ok" "Pool cache exists"
+    else
+        print_status "warn" "Pool cache missing: $ZFS_CACHE_FILE"
+        info "Will be created on first pool import"
+    fi
+    
+    echo ""
+    
+    # Check pools
+    subheader "ZFS Pools:"
+    echo ""
+    
+    local pools
+    pools=$(zpool list -H -o name 2>/dev/null || echo "")
+    
+    if [[ -z "$pools" ]]; then
+        warning "No ZFS pools found"
+        info "Import pools with: zpool import -a"
+    else
+        local pool_count
+        pool_count=$(echo "$pools" | wc -l)
+        success "Found $pool_count pool(s)"
+        
+        while IFS= read -r pool; do
+            [[ -z "$pool" ]] && continue
+            
+            local health
+            health=$(zpool list -H -o health "$pool" 2>/dev/null || echo "UNKNOWN")
+            
+            case "$health" in
+                ONLINE)
+                    print_status "ok" "Pool $pool: $health"
+                    ;;
+                DEGRADED)
+                    print_status "warn" "Pool $pool: $health"
+                    issues_found=$((issues_found + 1))
+                    ;;
+                *)
+                    print_status "error" "Pool $pool: $health"
+                    issues_found=$((issues_found + 1))
+                    ;;
+            esac
+        done <<< "$pools"
+    fi
+    
+    echo ""
+    
+    # Summary
     separator "="
     echo ""
     
-    info "Service management commands:"
-    indent 1 "• Check status:  sv status <service>"
-    indent 1 "• Start service: sv up <service>"
-    indent 1 "• Stop service:  sv down <service>"
-    indent 1 "• Restart:       sv restart <service>"
-    echo ""
-    
-    info "Log file location: $LOG_FILE"
-    info "To re-run this script: sudo $0"
+    if [[ $issues_found -eq 0 ]]; then
+        success "Verification complete: No issues found"
+        return 0
+    else
+        warning "Verification complete: $issues_found issue(s) found"
+        return 1
+    fi
+}
+
+# ============================================
+# Usage/Help
+# ============================================
+usage() {
+    cat << EOF
+Usage: $0 <command> [service]
+
+$SCRIPT_NAME v$SCRIPT_VERSION
+
+Manages ZFS-related runit services on Void Linux.
+
+COMMANDS:
+
+Service Management:
+    status [service]        Show status of service(s)
+    start <service>         Start a service
+    stop <service>          Stop a service
+    restart <service>       Restart a service
+    enable <service>        Enable a service
+    disable <service>       Disable a service
+    details <service>       Show detailed service information
+
+Batch Operations:
+    list                    List all ZFS services and their status
+    enable-all              Enable all ZFS services
+    disable-all             Disable all ZFS services
+    start-all               Start all ZFS services
+    stop-all                Stop all ZFS services
+    restart-all             Restart all ZFS services
+
+Verification:
+    verify                  Verify ZFS services configuration
+
+Help:
+    help                    Show this help message
+
+SERVICES:
+
+Core ZFS Services:
+    zfs-import              Import ZFS pools at boot
+    zfs-mount               Mount ZFS datasets
+    zfs-share               Share ZFS datasets (NFS/SMB)
+    zfs-zed                 ZFS Event Daemon
+
+Optional Services:
+    zfs-scrub               Automated scrub scheduling (if installed)
+
+EXAMPLES:
+
+    $0 status                    # Show status of all services
+    $0 status zfs-import         # Show status of specific service
+    $0 start zfs-zed             # Start ZFS Event Daemon
+    $0 restart-all               # Restart all ZFS services
+    $0 enable-all                # Enable all ZFS services
+    $0 verify                    # Verify ZFS configuration
+
+EXIT CODES:
+    0    Success
+    1    Error or issues found
+
+LOG FILE:
+    $LOG_FILE
+
+EOF
+    exit 0
 }
 
 # ============================================
 # Main Execution
 # ============================================
 main() {
-    # Check root privileges
-    require_root
+    local command="${1:-}"
+    local service="${2:-}"
     
-    # Script header
-    header "$SCRIPT_NAME v$SCRIPT_VERSION for Void Linux"
-    info "This script will audit your ZFS setup and configure services"
-    info "Log file: $LOG_FILE"
-    echo ""
-    
-    # Run audit
-    if ! audit_service_existence; then
-        die "Cannot continue without ZFS services"
+    # Require root for most operations
+    if [[ "$command" != "help" ]] && [[ "$command" != "status" ]] && [[ "$command" != "list" ]] && [[ "$command" != "details" ]]; then
+        require_root
     fi
     
-    if ! audit_pools; then
-        warning "No pools found, but continuing with audit"
-    fi
-    
-    if ! audit_datasets; then
-        warning "No datasets found, but continuing with audit"
-    fi
-    
-    analyze_requirements
-    
-    # Ask for confirmation before setup
-    separator "="
-    echo ""
-    if ask_yes_no "Do you want to configure services based on this analysis?" "y"; then
-        setup_services
-        verify_setup
-        show_summary
-    else
-        info "Setup cancelled by user"
-        info "Services were not modified"
-    fi
-    
-    echo ""
-    success "Script completed successfully"
+    case "$command" in
+        status)
+            if [[ -n "$service" ]]; then
+                header "Service Status"
+                show_service_status "$service"
+            else
+                list_all_services
+            fi
+            ;;
+        
+        start)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            start_service "$service"
+            ;;
+        
+        stop)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            stop_service "$service"
+            ;;
+        
+        restart)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            restart_service "$service"
+            ;;
+        
+        enable)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            enable_service "$service"
+            ;;
+        
+        disable)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            disable_service "$service"
+            ;;
+        
+        details)
+            if [[ -z "$service" ]]; then
+                error "Service name required"
+                usage
+            fi
+            show_service_details "$service"
+            ;;
+        
+        list)
+            list_all_services
+            ;;
+        
+        enable-all)
+            enable_all_services
+            ;;
+        
+        disable-all)
+            disable_all_services
+            ;;
+        
+        start-all)
+            start_all_services
+            ;;
+        
+        stop-all)
+            stop_all_services
+            ;;
+        
+        restart-all)
+            restart_all_services
+            ;;
+        
+        verify)
+            verify_zfs_services
+            ;;
+        
+        help|--help|-h|"")
+            usage
+            ;;
+        
+        *)
+            error "Unknown command: $command"
+            echo ""
+            usage
+            ;;
+    esac
 }
 
 # Run main function
 main "$@"
+```
