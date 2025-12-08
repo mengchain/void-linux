@@ -286,10 +286,11 @@ menu() {
     echo
     local choice
     while true; do
-        read -rp "$(print "${BLUE}?${NC} Select option [1-${#options[@]}]: ")" choice
+        echo -e -n "${BLUE}?${NC} Select option [1-${#options[@]}]: "
+        read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})); then
             echo "$choice"
-            return $choice
+            return 0
         fi
         error "Invalid selection. Please enter a number between 1 and ${#options[@]}"
     done
