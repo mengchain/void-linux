@@ -435,7 +435,8 @@ collect_disk_selection() {
     echo
     local choice
     while true; do
-        read -rp "$(print "${BLUE}?${NC} Select disk [1-${#disks[@]}]: ")" choice
+        echo -e -n "${BLUE}?${NC} Select disk [1-${#disks[@]}]: "
+		read -r choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#disks[@]})); then
             break
         fi
@@ -475,7 +476,8 @@ collect_zfs_passphrase() {
     echo
     
     while true; do
-        read -rsp "$(print "${BLUE}?${NC} Enter encryption passphrase (min 8 chars): ")" ZFS_PASSPHRASE
+        echo -e -n "${BLUE}?${NC} Enter encryption passphrase (min 8 chars): "
+		read -rs ZFS_PASSPHRASE
         echo
         
         if ! validate_passphrase_length "$ZFS_PASSPHRASE"; then
@@ -484,7 +486,8 @@ collect_zfs_passphrase() {
         fi
         
         local confirm
-        read -rsp "$(print "${BLUE}?${NC} Confirm passphrase: ")" confirm
+        echo -e -n "${BLUE}?${NC} Confirm passphrase: "
+		read -rs confirm
         echo
         
         if [[ "$ZFS_PASSPHRASE" == "$confirm" ]]; then
@@ -580,7 +583,8 @@ collect_passwords() {
     
     # Root password
     while true; do
-        read -rsp "$(print "${BLUE}?${NC} Enter root password (min 6 chars): ")" ROOT_PASSWORD
+        echo -e -n "${BLUE}?${NC} Enter root password (min 6 chars): "
+		read -rs ROOT_PASSWORD
         echo
         
         if ! validate_password_length "$ROOT_PASSWORD"; then
@@ -589,7 +593,8 @@ collect_passwords() {
         fi
         
         local confirm
-        read -rsp "$(print "${BLUE}?${NC} Confirm root password: ")" confirm
+        echo -e -n "${BLUE}?${NC} Confirm root password: "
+		read -rs confirm
         echo
         
         if [[ "$ROOT_PASSWORD" == "$confirm" ]]; then
@@ -602,7 +607,8 @@ collect_passwords() {
     
     # User password
     while true; do
-        read -rsp "$(print "${BLUE}?${NC} Enter password for $USERNAME (min 6 chars): ")" USER_PASSWORD
+        echo -e -n "${BLUE}?${NC} Enter password for $USERNAME (min 6 chars): "
+		read -rs USER_PASSWORD
         echo
         
         if ! validate_password_length "$USER_PASSWORD"; then
@@ -611,7 +617,8 @@ collect_passwords() {
         fi
         
         local confirm
-        read -rsp "$(print "${BLUE}?${NC} Confirm password for $USERNAME: ")" confirm
+        echo -e -n "${BLUE}?${NC} Confirm password for $USERNAME: "
+		read -rs confirm
         echo
         
         if [[ "$USER_PASSWORD" == "$confirm" ]]; then
