@@ -1,39 +1,80 @@
-#!/bin/bash
-# common.sh - Shared logging and color library for ZFS scripts
-# Version: 1.1
-# Description: Provides consistent logging, colors, and utility functions
+#!/usr/bin/env bash
+# filepath: common.sh
+# Common Library for Bash Scripts
+# Version: 2.0
+# Description: Generic shared functions for logging, colors, and utilities
+#
+# This library provides:
+# - Logging and output formatting
+# - Error handling and validation
+# - Common utility functions
+# - Interactive user input
+#
+# This library is FILESYSTEM-AGNOSTIC
+# No ZFS-specific, Btrfs-specific, or other filesystem code
+#
+# Usage:
+#   source /usr/local/lib/zfs-scripts/common.sh
 
 # ============================================
 # Prevent multiple sourcing
 # ============================================
-if [[ -n "${ZFS_COMMON_LOADED:-}" ]]; then
+if [[ -n "${COMMON_LIBRARY_LOADED:-}" ]]; then
     return 0
 fi
-ZFS_COMMON_LOADED=1
+readonly COMMON_LIBRARY_LOADED=1
+
+# ============================================
+# LIBRARY METADATA
+# ============================================
+readonly COMMON_VERSION="2.0"
+readonly COMMON_DATE="2025-12-08"
 
 # ============================================
 # Color Definitions
 # ============================================
-# Standard colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[1;94m'      # Light blue for better visibility
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-WHITE='\033[1;37m'
-BOLD='\033[1m'
-DIM='\033[2m'
-UNDERLINE='\033[4m'
-NC='\033[0m'           # No Color / Reset
-
-# Semantic colors (for consistency)
-COLOR_SUCCESS="$GREEN"
-COLOR_ERROR="$RED"
-COLOR_WARNING="$YELLOW"
-COLOR_INFO="$BLUE"
-COLOR_DEBUG="$CYAN"
-COLOR_HEADER="$MAGENTA"
+# Detect if we should use colors
+if [[ -t 1 ]] && [[ "${USE_COLORS:-true}" == "true" ]]; then
+    # Standard colors
+    readonly RED='\033[0;31m'
+    readonly GREEN='\033[0;32m'
+    readonly YELLOW='\033[1;33m'
+    readonly BLUE='\033[1;94m'      # Light blue for better visibility
+    readonly CYAN='\033[0;36m'
+    readonly MAGENTA='\033[0;35m'
+    readonly WHITE='\033[1;37m'
+    readonly BOLD='\033[1m'
+    readonly DIM='\033[2m'
+    readonly UNDERLINE='\033[4m'
+    readonly NC='\033[0m'           # No Color / Reset
+    
+    # Semantic colors (for consistency)
+    readonly COLOR_SUCCESS="$GREEN"
+    readonly COLOR_ERROR="$RED"
+    readonly COLOR_WARNING="$YELLOW"
+    readonly COLOR_INFO="$BLUE"
+    readonly COLOR_DEBUG="$CYAN"
+    readonly COLOR_HEADER="$MAGENTA"
+else
+    # No colors
+    readonly RED=''
+    readonly GREEN=''
+    readonly YELLOW=''
+    readonly BLUE=''
+    readonly CYAN=''
+    readonly MAGENTA=''
+    readonly WHITE=''
+    readonly BOLD=''
+    readonly DIM=''
+    readonly UNDERLINE=''
+    readonly NC=''
+    readonly COLOR_SUCCESS=''
+    readonly COLOR_ERROR=''
+    readonly COLOR_WARNING=''
+    readonly COLOR_INFO=''
+    readonly COLOR_DEBUG=''
+    readonly COLOR_HEADER=''
+fi
 
 # ============================================
 # Symbols for better visual output
@@ -47,45 +88,38 @@ fi
 
 # Use UTF-8 symbols if supported, ASCII fallback otherwise
 if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
-    SYMBOL_SUCCESS="✓"
-    SYMBOL_ERROR="✗"
-    SYMBOL_WARNING="⚠"
-    SYMBOL_INFO="ℹ"
-    SYMBOL_DEBUG="🔍"
-    SYMBOL_ARROW="→"
-    SYMBOL_BULLET="•"
+    readonly SYMBOL_SUCCESS="✓"
+    readonly SYMBOL_ERROR="✗"
+    readonly SYMBOL_WARNING="⚠"
+    readonly SYMBOL_INFO="ℹ"
+    readonly SYMBOL_DEBUG="🔍"
+    readonly SYMBOL_ARROW="→"
+    readonly SYMBOL_BULLET="•"
 else
-    SYMBOL_SUCCESS="[OK]"
-    SYMBOL_ERROR="[!!]"
-    SYMBOL_WARNING="[**]"
-    SYMBOL_INFO="[ii]"
-    SYMBOL_DEBUG="[>>]"
-    SYMBOL_ARROW="->"
-    SYMBOL_BULLET="*"
+    readonly SYMBOL_SUCCESS="[OK]"
+    readonly SYMBOL_ERROR="[!!]"
+    readonly SYMBOL_WARNING="[**]"
+    readonly SYMBOL_INFO="[ii]"
+    readonly SYMBOL_DEBUG="[>>]"
+    readonly SYMBOL_ARROW="->"
+    readonly SYMBOL_BULLET="*"
 fi
 
 # ============================================
 # Configuration
 # ============================================
 # Default log file (can be overridden by sourcing script)
-LOG_FILE="${LOG_FILE:-/var/log/zfs-scripts.log}"
+LOG_FILE="${LOG_FILE:-/var/log/script.log}"
 
 # Log levels
-LOG_LEVEL_DEBUG=0
-LOG_LEVEL_INFO=1
-LOG_LEVEL_WARNING=2
-LOG_LEVEL_ERROR=3
-LOG_LEVEL_NONE=4
+readonly LOG_LEVEL_DEBUG=0
+readonly LOG_LEVEL_INFO=1
+readonly LOG_LEVEL_WARNING=2
+readonly LOG_LEVEL_ERROR=3
+readonly LOG_LEVEL_NONE=4
 
 # Current log level (default: INFO)
 CURRENT_LOG_LEVEL="${CURRENT_LOG_LEVEL:-$LOG_LEVEL_INFO}"
-
-# Enable/disable colored output (auto-detect TTY)
-if [[ -t 1 ]]; then
-    USE_COLORS="${USE_COLORS:-true}"
-else
-    USE_COLORS="${USE_COLORS:-false}"
-fi
 
 # Enable/disable log file output
 USE_LOG_FILE="${USE_LOG_FILE:-true}"
@@ -158,7 +192,7 @@ _log() {
     timestamp="[$(date '+%Y-%m-%d %H:%M:%S')]"
     
     local formatted_message
-    if [[ "$USE_COLORS" == "true" ]]; then
+    if [[ -n "$color" ]]; then
         formatted_message="${color}${symbol} ${level}: ${message}${NC}"
     else
         formatted_message="${symbol} ${level}: ${message}"
@@ -206,20 +240,20 @@ debug() {
 # ============================================
 header() {
     local message="$*"
-    local line_length=60
+    local line_length=70
     local line
     line=$(printf '=%.0s' $(seq 1 $line_length))
     
-    if [[ "$USE_COLORS" == "true" ]]; then
+    if [[ -n "$COLOR_HEADER" ]]; then
         echo ""
         echo -e "${COLOR_HEADER}${line}${NC}"
-        echo -e "${COLOR_HEADER}${BOLD}${message}${NC}"
+        echo -e "${COLOR_HEADER}${BOLD}  ${message}${NC}"
         echo -e "${COLOR_HEADER}${line}${NC}"
         echo ""
     else
         echo ""
         echo "$line"
-        echo "$message"
+        echo "  $message"
         echo "$line"
         echo ""
     fi
@@ -229,7 +263,7 @@ header() {
         {
             echo ""
             echo "$line"
-            echo "$message"
+            echo "  $message"
             echo "$line"
             echo ""
         } >> "$LOG_FILE" 2>/dev/null
@@ -238,7 +272,7 @@ header() {
 
 subheader() {
     local message="$*"
-    if [[ "$USE_COLORS" == "true" ]]; then
+    if [[ -n "$CYAN" ]]; then
         echo -e "${CYAN}${BOLD}${message}${NC}"
     else
         echo "$message"
@@ -250,7 +284,7 @@ subheader() {
 # Print with bullet point
 bullet() {
     local message="$*"
-    if [[ "$USE_COLORS" == "true" ]]; then
+    if [[ -n "$CYAN" ]]; then
         echo -e "  ${CYAN}${SYMBOL_BULLET}${NC} ${message}"
     else
         echo "  ${SYMBOL_BULLET} ${message}"
@@ -308,7 +342,7 @@ print_status() {
             ;;
     esac
     
-    if [[ "$USE_COLORS" == "true" ]]; then
+    if [[ -n "$status_color" ]]; then
         echo -e "[${status_color}${status_symbol}${NC}] ${message}"
     else
         echo "[$status_symbol] $message"
@@ -342,13 +376,13 @@ spinner() {
     tput cnorm 2>/dev/null || true
     
     if [[ $exit_status -eq 0 ]]; then
-        if [[ "$USE_COLORS" == "true" ]]; then
+        if [[ -n "$GREEN" ]]; then
             printf "\r%s [${GREEN}${SYMBOL_SUCCESS}${NC}]\n" "$message"
         else
             printf "\r%s [${SYMBOL_SUCCESS}]\n" "$message"
         fi
     else
-        if [[ "$USE_COLORS" == "true" ]]; then
+        if [[ -n "$RED" ]]; then
             printf "\r%s [${RED}${SYMBOL_ERROR}${NC}]\n" "$message"
         else
             printf "\r%s [${SYMBOL_ERROR}]\n" "$message"
@@ -377,6 +411,17 @@ progress_bar() {
     if [[ $current -eq $total ]]; then
         echo ""
     fi
+}
+
+# Print separator line
+separator() {
+    local char="${1:--}"
+    local length="${2:-70}"
+    local line
+    line=$(printf "${char}%.0s" $(seq 1 "$length"))
+    echo "$line"
+    
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "$line" >> "$LOG_FILE" 2>/dev/null
 }
 
 # ============================================
@@ -490,7 +535,7 @@ die() {
             echo "FATAL ERROR: $*"
             echo "Stack trace:"
             local frame=0
-            while caller $frame; do
+            while caller $frame 2>/dev/null; do
                 ((frame++))
             done
         } >> "$LOG_FILE" 2>/dev/null
@@ -499,29 +544,23 @@ die() {
     exit 1
 }
 
-# Print separator line
-separator() {
-    local char="${1:--}"
-    local length="${2:-60}"
-    local line
-    line=$(printf "${char}%.0s" $(seq 1 "$length"))
-    echo "$line"
-    
-    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "$line" >> "$LOG_FILE" 2>/dev/null
-}
-
 # Safe command execution with logging
 safe_run() {
-    local cmd="$*"
+    local cmd=("$@")
     
-    debug "Executing: $cmd"
+    debug "Executing: ${cmd[*]}"
     
-    if eval "$cmd"; then
-        debug "Command succeeded: $cmd"
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        info "DRY RUN: Would execute: ${cmd[*]}"
+        return 0
+    fi
+    
+    if "${cmd[@]}" 2>&1 | head -1000; then
+        debug "Command succeeded: ${cmd[*]}"
         return 0
     else
         local exit_code=$?
-        error "Command failed (exit code: $exit_code): $cmd"
+        error "Command failed (exit code: $exit_code): ${cmd[*]}"
         return $exit_code
     fi
 }
@@ -531,15 +570,15 @@ retry_command() {
     local max_attempts="${1:-3}"
     local delay="${2:-1}"
     shift 2
-    local cmd="$*"
+    local cmd=("$@")
     
     local attempt=1
     local exit_code=0
     
     while [[ $attempt -le $max_attempts ]]; do
-        debug "Attempt $attempt/$max_attempts: $cmd"
+        debug "Attempt $attempt/$max_attempts: ${cmd[*]}"
         
-        if eval "$cmd"; then
+        if "${cmd[@]}"; then
             return 0
         fi
         exit_code=$?
@@ -553,7 +592,7 @@ retry_command() {
         ((attempt++))
     done
     
-    error "Command failed after $max_attempts attempts: $cmd"
+    error "Command failed after $max_attempts attempts: ${cmd[*]}"
     return $exit_code
 }
 
@@ -579,6 +618,205 @@ trim() {
     # Remove trailing whitespace
     var="${var%"${var##*[![:space:]]}"}"
     echo "$var"
+}
+
+# Get human-readable size
+human_size() {
+    local bytes="$1"
+    local units=("B" "KB" "MB" "GB" "TB" "PB")
+    local unit=0
+    local size="$bytes"
+    
+    while (( $(echo "$size >= 1024" | bc -l 2>/dev/null || echo 0) )); do
+        size=$(echo "scale=2; $size / 1024" | bc)
+        ((unit++))
+    done
+    
+    printf "%.2f %s" "$size" "${units[$unit]}"
+}
+
+# Get timestamp
+timestamp() {
+    date '+%Y%m%d-%H%M%S'
+}
+
+# Get ISO timestamp
+timestamp_iso() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
+# Sleep with countdown
+sleep_countdown() {
+    local seconds="$1"
+    local message="${2:-Waiting}"
+    
+    for ((i=seconds; i>0; i--)); do
+        echo -ne "\r$message: ${i}s  "
+        sleep 1
+    done
+    echo -e "\r$message: Done!  "
+}
+
+# ============================================
+# File Operations
+# ============================================
+# Create backup of file
+backup_file() {
+    local file="$1"
+    local backup_suffix="${2:-.backup.$(timestamp)}"
+    
+    if [[ ! -f "$file" ]]; then
+        warning "Cannot backup non-existent file: $file"
+        return 1
+    fi
+    
+    local backup_file="${file}${backup_suffix}"
+    
+    if cp -a "$file" "$backup_file"; then
+        success "Backup created: $backup_file"
+        return 0
+    else
+        error "Failed to create backup: $backup_file"
+        return 1
+    fi
+}
+
+# Create directory with parents
+ensure_directory() {
+    local dir="$1"
+    local perms="${2:-755}"
+    
+    if [[ -d "$dir" ]]; then
+        debug "Directory already exists: $dir"
+        return 0
+    fi
+    
+    if mkdir -p "$dir"; then
+        chmod "$perms" "$dir"
+        debug "Created directory: $dir"
+        return 0
+    else
+        error "Failed to create directory: $dir"
+        return 1
+    fi
+}
+
+# ============================================
+# Validation Functions
+# ============================================
+# Validate file exists
+validate_file() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    if [[ ! -f "$file" ]]; then
+        error "$description not found: $file"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate directory exists
+validate_directory() {
+    local dir="$1"
+    local description="${2:-Directory}"
+    
+    if [[ ! -d "$dir" ]]; then
+        error "$description not found: $dir"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate file is readable
+validate_readable() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    if [[ ! -r "$file" ]]; then
+        error "$description is not readable: $file"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate file is writable
+validate_writable() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    # Check if file exists and is writable, or directory is writable
+    if [[ -f "$file" ]]; then
+        if [[ ! -w "$file" ]]; then
+            error "$description is not writable: $file"
+            return 1
+        fi
+    else
+        local dir
+        dir=$(dirname "$file")
+        if [[ ! -w "$dir" ]]; then
+            error "Cannot write to directory: $dir"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# Validate device exists
+validate_device() {
+    local device="$1"
+    local description="${2:-Device}"
+    
+    if [[ ! -b "$device" ]]; then
+        error "$description not found or not a block device: $device"
+        return 1
+    fi
+    
+    return 0
+}
+
+# ============================================
+# System Information
+# ============================================
+# Get distribution name
+get_distro() {
+    if [[ -f /etc/os-release ]]; then
+        grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"'
+    else
+        echo "unknown"
+    fi
+}
+
+# Get kernel version
+get_kernel_version() {
+    uname -r
+}
+
+# Get system architecture
+get_architecture() {
+    uname -m
+}
+
+# Check if system is UEFI
+is_uefi() {
+    [[ -d /sys/firmware/efi ]]
+}
+
+# Get available memory in MB
+get_available_memory() {
+    local mem_kb
+    mem_kb=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+    echo $((mem_kb / 1024))
+}
+
+# Get disk space in MB
+get_disk_space() {
+    local path="${1:-.}"
+    df -m "$path" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0"
 }
 
 # ============================================
@@ -609,6 +847,12 @@ run_cleanup() {
 # Trap EXIT to run cleanup
 trap run_cleanup EXIT
 
+# Trap INT signal (Ctrl+C)
+trap 'echo ""; warning "Interrupted by user"; exit 130' INT
+
+# Trap TERM signal
+trap 'echo ""; warning "Terminated"; exit 143' TERM
+
 # ============================================
 # Initialization
 # ============================================
@@ -620,14 +864,18 @@ _init_log_file
 # ============================================
 export -f success error warning info debug
 export -f header subheader bullet indent
-export -f print_status separator progress_bar
+export -f print_status separator progress_bar spinner
 export -f ask_yes_no ask_input confirm_action
 export -f require_root command_exists in_chroot die
 export -f safe_run retry_command in_array trim
+export -f validate_file validate_directory validate_readable validate_writable validate_device
+export -f backup_file ensure_directory
+export -f human_size timestamp timestamp_iso sleep_countdown
+export -f get_distro get_kernel_version get_architecture is_uefi get_available_memory get_disk_space
 export -f register_cleanup run_cleanup
 
 # Log that library was loaded
-debug "common.sh library loaded (version 1.1)"
+debug "common.sh library v${COMMON_VERSION} loaded successfully"
 
 # Return success
 return 0
