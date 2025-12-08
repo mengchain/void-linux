@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # filepath: voidZFSInstallRepo.sh
 # Void Linux ZFS Installation Script
-# Version: 3.1 - All user input collected upfront
+# Version: 3.2 - Fixed swap handling and cleanup
 
 export TERM=xterm
 set -euo pipefail
@@ -37,11 +37,10 @@ fi
 # ============================================
 LOG_FILE="configureNinstall.log"
 FONT="drdos8x14"
-setfont "$FONT"
 
 # Script metadata
 SCRIPT_NAME="Void Linux ZFS Installation"
-SCRIPT_VERSION="3.1"
+SCRIPT_VERSION="3.2"
 
 # Redirect all output to both console and log file
 exec &> >(tee "$LOG_FILE")
@@ -81,7 +80,7 @@ ask() {
 }
 
 menu() {
-    PS3="$(printf "${BLUE}> Choose a number: ${NC}")"
+    PS3="${BLUE}> Choose a number: ${NC}"
     select i in "$@"; do
         echo "$i"
         break
@@ -144,7 +143,7 @@ collect_installation_type() {
     info "Select installation mode:"
     echo ""
     
-    PS3="$(printf "${BLUE}Choose installation type: ${NC}")"
+    PS3="${BLUE}Choose installation type: ${NC}"
     select type in "First Install (New System)" "Dual Boot (Add to Existing ZFS)"; do
         case "$type" in
             "First Install (New System)")
@@ -196,7 +195,7 @@ collect_disk_selection() {
     done
     echo ""
     
-    PS3="$(printf "${BLUE}Select installation disk: ${NC}")"
+    PS3="${BLUE}Select installation disk: ${NC}"
     select ENTRY in "${disks[@]}"; do
         if [[ -n $ENTRY ]]; then
             SELECTED_DISK="/dev/disk/by-id/$ENTRY"
@@ -235,12 +234,10 @@ collect_zfs_passphrase() {
     echo ""
     
     while true; do
-        echo -e -n "${BLUE}Enter ZFS encryption passphrase: ${NC}"
-		read -r -s pass1
-		echo
-        echo -e -n "${BLUE}Confirm passphrase: ${NC}"
-		read -r -s pass2
-		echo
+        read -r -p "${BLUE}Enter ZFS encryption passphrase: ${NC}" -s pass1
+        echo
+        read -r -p "${BLUE}Confirm passphrase: ${NC}" -s pass2
+        echo
         
         if [[ "$pass1" == "$pass2" ]]; then
             if [[ ${#pass1} -lt 8 ]]; then
@@ -265,9 +262,8 @@ collect_dataset_name() {
     echo ""
     
     while true; do
-        echo -e -n "${BLUE}Root dataset name: ${NC}"
-		read -r -s dataset_name
-		echo
+        read -r -p "${BLUE}Root dataset name: ${NC}" dataset_name
+        
         # Validate name
         if [[ -z "$dataset_name" ]]; then
             warning "Dataset name cannot be empty"
@@ -303,10 +299,9 @@ collect_swap_configuration() {
         if ask_yes_no "Do you want to create a swap space?" "y"; then
             CREATE_SWAP=true
             
-            while true; do                
-                echo -e -n "${BLUE}Enter swap size (e.g., 4G, 8G, 16G): ${NC}"
-				read -r -s swap_size
-				echo				
+            while true; do
+                read -r -p "${BLUE}Enter swap size (e.g., 4G, 8G, 16G): ${NC}" swap_size
+                
                 if [[ $swap_size =~ ^[0-9]+[GMgm]$ ]]; then
                     SWAP_SIZE="$swap_size"
                     success "Swap size: $SWAP_SIZE"
@@ -328,10 +323,9 @@ collect_system_configuration() {
     echo ""
     
     # Hostname
-    while true; do        
-        echo -e -n "${BLUE}Enter hostname: ${NC}"
-		read -r -s hostname_input
-		echo
+    while true; do
+        read -r -p "${BLUE}Enter hostname: ${NC}" hostname_input
+        
         if [[ -z "$hostname_input" ]]; then
             warning "Hostname cannot be empty"
             continue
@@ -350,18 +344,15 @@ collect_system_configuration() {
     
     # Timezone
     info "Enter timezone (e.g., America/New_York, Europe/London, Asia/Singapore)"
-	echo -e -n "${BLUE}Timezone [Asia/Singapore]: ${NC}"
-	read -r -s timezone_input
-	echo
+    read -r -p "${BLUE}Timezone [Asia/Singapore]: ${NC}" timezone_input
     TIMEZONE="${timezone_input:-Asia/Singapore}"
     success "Timezone: $TIMEZONE"
     echo ""
     
     # Username
     while true; do
-        echo -e -n "${BLUE}Enter username: ${NC}"
-		read -r -s username_input
-
+        read -r -p "${BLUE}Enter username: ${NC}" username_input
+        
         if [[ -z "$username_input" ]]; then
             warning "Username cannot be empty"
             continue
@@ -387,11 +378,9 @@ collect_passwords() {
     # Root password
     info "Set root password"
     while true; do
-		echo -e -n "${BLUE}Enter root password: ${NC}"
-		read -r -s root_pass1
+        read -r -p "${BLUE}Enter root password: ${NC}" -s root_pass1
         echo
-		echo -e -n "${BLUE}Confirm root password: ${NC}"
-		read -r -s root_pass2		
+        read -r -p "${BLUE}Confirm root password: ${NC}" -s root_pass2
         echo
         
         if [[ "$root_pass1" == "$root_pass2" ]]; then
@@ -411,12 +400,11 @@ collect_passwords() {
     # User password
     info "Set password for user: $USERNAME"
     while true; do
-		echo -e -n "${BLUE}Enter user password: ${NC}"
-		read -r -s user_pass1
-		echo  
-		echo -e -n "${BLUE}Confirm user password: ${NC}"
-		read -r -s user_pass2
-		echo  
+        read -r -p "${BLUE}Enter user password: ${NC}" -s user_pass1
+        echo
+        read -r -p "${BLUE}Confirm user password: ${NC}" -s user_pass2
+        echo
+        
         if [[ "$user_pass1" == "$user_pass2" ]]; then
             if [[ ${#user_pass1} -lt 6 ]]; then
                 warning "Password must be at least 6 characters!"
@@ -726,18 +714,29 @@ create_swapspace() {
 }
 
 export_pool() {
+    subheader "Exporting Pool"
+    
     info "Exporting zpool..."
-    zpool export zroot
+    if ! zpool export zroot; then
+        warning "Clean export failed, retrying..."
+        sleep 2
+        zpool export -f zroot || die "Pool export failed!"
+    fi
     
     # Verify export
-    if zpool list zroot &>/dev/null; then
-        die "Pool export failed!"
+    if zpool list zroot &>/dev/null 2>&1; then
+        die "Pool still imported after export!"
     fi
     
     success "Pool exported successfully"
+    
+    # Note about kernel taint
+    info "Note: 'Tainted: P OE' kernel messages are normal for ZFS (CDDL license compatibility)"
 }
 
 import_pool() {
+    subheader "Importing Pool"
+    
     info "Importing zpool..."
     if ! zpool import -d /dev/disk/by-id -R /mnt zroot -N -f; then
         die "Failed to import pool"
@@ -1008,7 +1007,14 @@ configure_users() {
     subheader "User Configuration"
     
     info "Configuring system in chroot..."
-    chroot /mnt/ /bin/bash -e <<EOF
+    
+    # Create flag variable to pass to chroot
+    local create_swap_flag="false"
+    if [[ "$CREATE_SWAP" == true ]]; then
+        create_swap_flag="true"
+    fi
+    
+    chroot /mnt/ /bin/bash -e <<EOFCHROOT
   set -e
   
   # Configure DNS
@@ -1044,18 +1050,36 @@ configure_users() {
   useradd -m -d /home/${USERNAME} -G network,wheel,video,audio,input,kvm ${USERNAME}
   chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
   
-  # Activate swap if created
-  if [[ "$CREATE_SWAP" == true ]]; then
-    sleep 2
+  # Configure swap persistence (activation happens on first boot)
+  if [[ "$create_swap_flag" == "true" ]]; then
     if [[ -e /dev/zvol/zroot/swap ]]; then
-      swapon /dev/zvol/zroot/swap 2>/dev/null || true
+      # Create rc.local if it doesn't exist
+      if [[ ! -f /etc/rc.local ]]; then
+        cat > /etc/rc.local << 'EOFRC'
+#!/bin/sh
+# System local startup commands
+EOFRC
+        chmod +x /etc/rc.local
+      fi
+      
+      # Add swap activation command
+      if ! grep -q "swapon /dev/zvol/zroot/swap" /etc/rc.local; then
+        echo "" >> /etc/rc.local
+        echo "# Activate ZFS swap" >> /etc/rc.local
+        echo "swapon /dev/zvol/zroot/swap 2>/dev/null || true" >> /etc/rc.local
+      fi
     fi
   fi
-EOF
+EOFCHROOT
     
     print_status "ok" "Essential services enabled"
     print_status "ok" "ZFS services enabled"
     print_status "ok" "User $USERNAME created"
+    
+    if [[ "$CREATE_SWAP" == true ]]; then
+        print_status "ok" "Swap configured for auto-activation on boot"
+    fi
+    
     success "System configured in chroot"
 }
 
@@ -1070,12 +1094,13 @@ configure_fstab() {
 UUID=$EFI_UUID               /boot/efi      vfat    defaults,noatime                 0      2
 tmpfs                        /tmp           tmpfs   defaults,nosuid,nodev,mode=1777  0      0
 tmpfs                        /dev/shm       tmpfs   defaults,nosuid,nodev,noexec     0      0
-efivarfs                     /sys/firmware/efi/efivars efivarfs defaults              0      0
 EOF
 
     # Add swap entry if created
     if [[ "$CREATE_SWAP" == true ]]; then
-        echo "/dev/zvol/zroot/swap  none           swap    discard,pri=100                 0      0" >> /mnt/etc/fstab
+        cat >> /mnt/etc/fstab <<EOF
+/dev/zvol/zroot/swap         none           swap    discard,pri=100                  0      0
+EOF
         print_status "ok" "Swap entry added"
     fi
     
@@ -1271,38 +1296,115 @@ create_efi_entries() {
     efibootmgr
 }
 
+verify_cleanup() {
+    subheader "Verifying Cleanup"
+    
+    # Check for active swap
+    if swapon --show | grep -q zvol; then
+        warning "Swap still active, disabling..."
+        swapoff -a
+    fi
+    
+    # Check for mounted ZFS under /mnt
+    local mounted_zfs
+    mounted_zfs=$(mount | grep "^zroot.*on /mnt" || echo "")
+    if [[ -n "$mounted_zfs" ]]; then
+        warning "ZFS datasets still mounted under /mnt:"
+        echo "$mounted_zfs"
+        return 1
+    fi
+    
+    # Check for bind mounts
+    local bind_mounts
+    bind_mounts=$(mount | grep " on /mnt/" | grep -v "^zroot" || echo "")
+    if [[ -n "$bind_mounts" ]]; then
+        warning "Bind mounts still active under /mnt:"
+        echo "$bind_mounts"
+        return 1
+    fi
+    
+    success "Cleanup verification passed"
+    return 0
+}
+
 cleanup_and_unmount() {
     header "Cleanup and Unmount"
     
+    # Disable swap first if it was created (but don't activate it during install)
+    if [[ "$CREATE_SWAP" == true ]]; then
+        info "Ensuring swap is not active..."
+        swapoff -a 2>/dev/null || true
+        sleep 2
+        print_status "ok" "Swap check complete"
+    fi
+    
     # Unmount EFI
     info "Unmounting EFI partition..."
-    if ! umount /mnt/boot/efi; then
-        warning "Failed to unmount /mnt/boot/efi cleanly"
-    else
-        print_status "ok" "EFI partition unmounted"
+    if mountpoint -q /mnt/boot/efi; then
+        umount /mnt/boot/efi || umount -l /mnt/boot/efi
     fi
+    print_status "ok" "EFI partition unmounted"
 
     # Unmount bind mounts
     info "Unmounting pseudo-filesystems..."
-    umount -l /mnt/{dev,proc,sys} 2>/dev/null || true
+    for mount_point in /mnt/dev /mnt/proc /mnt/sys; do
+        if mountpoint -q "$mount_point"; then
+            umount -R "$mount_point" 2>/dev/null || umount -l "$mount_point" 2>/dev/null
+        fi
+    done
+    sleep 2
     print_status "ok" "Pseudo-filesystems unmounted"
 
     # Unmount ZFS filesystems
     info "Unmounting ZFS filesystems..."
-    zfs umount -a
+    zfs umount -a || true
+    sleep 2
     print_status "ok" "ZFS filesystems unmounted"
 
+    # Verify no datasets are mounted under /mnt
+    if mount | grep -q "^zroot.*on /mnt"; then
+        warning "Some ZFS datasets still mounted, forcing unmount..."
+        zfs unmount -f zroot/ROOT/"$ROOT_DATASET_NAME" || true
+        sleep 2
+    fi
+
+    # Verify before export
+    if ! verify_cleanup; then
+        warning "Cleanup incomplete, retrying..."
+        sleep 5
+        # Retry cleanup steps
+        swapoff -a 2>/dev/null || true
+        umount -R /mnt/{dev,proc,sys} 2>/dev/null || true
+        zfs umount -a || true
+        sleep 3
+        
+        if ! verify_cleanup; then
+            error "Cannot complete cleanup - manual intervention may be needed"
+        fi
+    fi
+    
     # Export pool
     info "Exporting zpool..."
-    zpool export zroot
+    if ! zpool export zroot; then
+        warning "Clean export failed, trying force export..."
+        sleep 3
+        zpool export -f zroot
+    fi
 
     # Verify export
-    if zpool list zroot &>/dev/null; then
-        warning "Pool still imported, forcing export..."
-        zpool export -f zroot
+    if zpool list zroot &>/dev/null 2>&1; then
+        error "Pool still imported after export attempt!"
+        info "This may indicate active references. Attempting final force export..."
+        sleep 5
+        zpool export -f zroot || die "Cannot export pool - manual intervention required"
     fi
     
     success "Pool exported successfully"
+    
+    # Note about kernel taint
+    echo ""
+    info "Note: 'Tainted: P OE' kernel messages during installation are normal"
+    info "This indicates ZFS kernel modules (CDDL license) are loaded - this is expected behavior"
 }
 
 show_installation_summary() {
@@ -1315,10 +1417,6 @@ show_installation_summary() {
     bullet "Encryption: AES-256-GCM"
     bullet "Compression: lz4"
     
-    local hostid_value
-    hostid_value=$(cat /mnt/etc/hostid 2>/dev/null | od -An -tx1 || echo 'exported')
-    bullet "Hostid: $hostid_value"
-    
     bullet "Hostname: $HOSTNAME"
     bullet "Timezone: $TIMEZONE"
     bullet "Username: $USERNAME"
@@ -1326,7 +1424,7 @@ show_installation_summary() {
     bullet "UEFI entries: created"
     
     if [[ "$CREATE_SWAP" == true ]]; then
-        bullet "Swap: $SWAP_SIZE"
+        bullet "Swap: $SWAP_SIZE (will activate on first boot)"
     fi
     
     echo ""
@@ -1339,13 +1437,14 @@ show_installation_summary() {
     subheader "Next Steps:"
     indent 1 "1. Remove installation media"
     indent 1 "2. Reboot the system"
-    indent 1 "3. At ZFSBootMenu, select your boot environment"
+    indent 1 "3. At ZFSBootMenu, select your boot environment: $ROOT_DATASET_NAME"
     indent 1 "4. Enter encryption passphrase when prompted"
     echo ""
     
     subheader "Important Information:"
     indent 1 "• ZFS encryption passphrase will be required on every boot"
-    indent 1 "• Encryption key backup saved to /root/zfs-keys/ (after first boot)"
+    indent 1 "• Encryption key backup saved to /root/zfs-keys/"
+    indent 1 "• 'Tainted: P OE' kernel messages are normal (ZFS CDDL license)"
     indent 1 "• Log file saved to: $LOG_FILE"
     echo ""
     
