@@ -916,6 +916,7 @@ install_base_system() {
         dracut
         linux
         linux-headers
+        git
     )
     
     # Install packages
