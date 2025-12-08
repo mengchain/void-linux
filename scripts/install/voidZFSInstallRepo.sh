@@ -289,7 +289,7 @@ menu() {
         read -rp "$(print "${BLUE}?${NC} Select option [1-${#options[@]}]: ")" choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})); then
             echo "$choice"
-            return 0
+            return $choice
         fi
         error "Invalid selection. Please enter a number between 1 and ${#options[@]}"
     done
