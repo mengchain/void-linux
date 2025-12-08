@@ -5,7 +5,6 @@
 # Description: Automated ZFS-on-root installation for Void Linux
 
 export TERM=xterm
-set -euo pipefail
 
 # ============================================
 # Load Common Library
@@ -45,6 +44,7 @@ elif [[ -f "$SCRIPT_DIR/zfs-setup.conf" ]]; then
 else
     die "Cannot find zfs-setup.conf configuration file"
 fi
+set -euo pipefail
 
 # ============================================
 # Script Configuration
