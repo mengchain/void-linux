@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # filepath: voidZFSInstallRepo.sh
 # Void Linux ZFS Installation Script
-# Version: 4.1 - Using ask_input() from common.sh
+# Version: 4.3 - Helper functions moved to script
 # Description: Automated ZFS-on-root installation for Void Linux
 
 export TERM=xterm
@@ -54,7 +54,7 @@ FONT="drdos8x14"
 
 # Script metadata
 SCRIPT_NAME="Void Linux ZFS Installation"
-SCRIPT_VERSION="4.1"
+SCRIPT_VERSION="4.3"
 
 # Redirect all output to both console and log file
 exec &> >(tee "$LOG_FILE")
@@ -78,6 +78,190 @@ SWAP_SIZE=""              # e.g., "8G"
 
 # Track EFI partition UUID
 EFI_UUID=""
+
+# ============================================
+# Configuration Writer Helper Functions
+# ============================================
+
+# Write dracut ZFS configuration
+write_dracut_zfs_config() {
+    local target_file="${1:-$DRACUT_ZFS_CONF}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$DRACUT_ZFS_CONFIG_CONTENT" > "$target_file"
+    
+    return 0
+}
+
+# Write dracut main configuration
+write_dracut_main_config() {
+    local target_file="${1:-$DRACUT_MAIN_CONF}"
+    
+    echo "$DRACUT_MAIN_CONFIG_CONTENT" > "$target_file"
+    
+    return 0
+}
+
+# Write ZFSBootMenu configuration
+write_zbm_config() {
+    local target_file="${1:-$ZBM_CONFIG}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$ZBM_CONFIG_CONTENT" > "$target_file"
+    
+    return 0
+}
+
+# Write ZFSBootMenu keymap configuration
+write_zbm_keymap_config() {
+    local target_file="${1:-$ZBM_KEYMAP_CONF}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$ZBM_KEYMAP_CONFIG_CONTENT" > "$target_file"
+    
+    return 0
+}
+
+# Write kernel command line keymap configuration
+write_cmdline_keymap() {
+    local target_file="${1:-$CMDLINE_KEYMAP}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$CMDLINE_KEYMAP_CONTENT" > "$target_file"
+    
+    return 0
+}
+
+# Write IWD configuration
+write_iwd_config() {
+    local target_file="${1:-/etc/iwd/main.conf}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$IWD_MAIN_CONFIG" > "$target_file"
+    
+    return 0
+}
+
+# Write resolvconf configuration
+write_resolvconf_config() {
+    local target_file="${1:-/etc/resolvconf.conf}"
+    
+    echo "$RESOLVCONF_CONFIG" >> "$target_file"
+    
+    return 0
+}
+
+# Write sysctl configuration
+write_sysctl_config() {
+    local target_file="${1:-/etc/sysctl.conf}"
+    
+    echo "$SYSCTL_CONFIG" > "$target_file"
+    
+    return 0
+}
+
+# Write useradd defaults
+write_useradd_defaults() {
+    local target_file="${1:-/etc/default/useradd}"
+    
+    echo "$USERADD_DEFAULTS" > "$target_file"
+    
+    return 0
+}
+
+# Write sudoers wheel configuration
+write_sudoers_wheel() {
+    local target_file="${1:-/etc/sudoers.d/99-wheel}"
+    local target_dir
+    target_dir="$(dirname "$target_file")"
+    
+    mkdir -p "$target_dir"
+    echo "$SUDOERS_WHEEL" > "$target_file"
+    chmod 0440 "$target_file"
+    
+    return 0
+}
+
+# Write fstab configuration
+# Parameters:
+#   $1 - target file path
+#   $2 - EFI UUID
+#   $3 - ESP mount point
+#   $4 - pool name (for swap)
+#   $5 - include swap (true/false)
+write_fstab() {
+    local target_file="${1:-/etc/fstab}"
+    local efi_uuid="${2:-}"
+    local esp_mount="${3:-$ESP_MOUNT}"
+    local pool_name="${4:-$DEFAULT_POOL_NAME}"
+    local include_swap="${5:-false}"
+    
+    # Validate required parameters
+    if [[ -z "$efi_uuid" ]]; then
+        error "EFI UUID is required for fstab"
+        return 1
+    fi
+    
+    # Replace variables in template
+    local fstab_content="$FSTAB_TEMPLATE"
+    fstab_content="${fstab_content//__EFI_UUID__/$efi_uuid}"
+    fstab_content="${fstab_content//__ESP_MOUNT__/$esp_mount}"
+    
+    # Write base fstab
+    echo "$fstab_content" > "$target_file"
+    
+    # Add swap entry if requested
+    if [[ "$include_swap" == "true" ]]; then
+        local swap_entry="$FSTAB_SWAP_TEMPLATE"
+        swap_entry="${swap_entry//__POOL_NAME__/$pool_name}"
+        echo "$swap_entry" >> "$target_file"
+    fi
+    
+    success "fstab written to $target_file"
+    return 0
+}
+
+# Write user configuration script
+# Parameters:
+#   $1 - target file path
+#   $2 - root password
+#   $3 - username
+#   $4 - user password
+write_user_config_script() {
+    local target_file="${1:-/tmp/configure_users.sh}"
+    local root_password="${2:-}"
+    local username="${3:-}"
+    local user_password="${4:-}"
+    
+    # Validate required parameters
+    if [[ -z "$root_password" ]] || [[ -z "$username" ]] || [[ -z "$user_password" ]]; then
+        error "All passwords and username are required"
+        return 1
+    fi
+    
+    # Replace variables in template
+    local script_content="$CONFIGURE_USERS_SCRIPT_TEMPLATE"
+    script_content="${script_content//__ROOT_PASSWORD__/$root_password}"
+    script_content="${script_content//__USERNAME__/$username}"
+    script_content="${script_content//__USER_PASSWORD__/$user_password}"
+    
+    # Write script
+    echo "$script_content" > "$target_file"
+    chmod +x "$target_file"
+    
+    success "User configuration script written to $target_file"
+    return 0
+}
 
 # ============================================
 # Additional UI Functions (beyond common.sh)
@@ -791,25 +975,19 @@ EOF
 configure_users() {
     header "Configuring Users"
     
-    # Chroot and configure users
-    cat > /mnt/tmp/configure_users.sh <<EOFCHROOT
-#!/bin/bash
-set -e
-
-# Set root password
-echo "root:$ROOT_PASSWORD" | chpasswd
-
-# Create user
-useradd -m -G wheel,audio,video,input "$USERNAME"
-echo "$USERNAME:$USER_PASSWORD" | chpasswd
-
-# Set ownership of home directory
-chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
-
-EOFCHROOT
-
-    chmod +x /mnt/tmp/configure_users.sh
+    # Write user configuration script using template
+    info "Creating user configuration script..."
+    write_user_config_script \
+        "/mnt/tmp/configure_users.sh" \
+        "$ROOT_PASSWORD" \
+        "$USERNAME" \
+        "$USER_PASSWORD"
+    
+    # Execute the script in chroot
+    info "Configuring users in chroot..."
     safe_run chroot /mnt /tmp/configure_users.sh
+    
+    # Remove the script
     safe_run rm /mnt/tmp/configure_users.sh
     
     success "Users configured"
@@ -818,19 +996,13 @@ EOFCHROOT
 configure_fstab() {
     header "Configuring fstab"
     
-    cat > /mnt/etc/fstab <<EOF
-# <file system>              <mount point>  <type>  <options>                        <dump> <pass>
-UUID=$EFI_UUID               $ESP_MOUNT     vfat    defaults,noatime                 0      2
-tmpfs                        /tmp           tmpfs   defaults,nosuid,nodev,mode=1777  0      0
-tmpfs                        /dev/shm       tmpfs   defaults,nosuid,nodev,noexec     0      0
-EOF
-
-    # Add swap if configured
-    if [[ "$CREATE_SWAP" == "true" ]]; then
-        cat >> /mnt/etc/fstab <<EOF
-/dev/zvol/$DEFAULT_POOL_NAME/swap         none           swap    discard,pri=100                  0      0
-EOF
-    fi
+    info "Writing fstab configuration..."
+    write_fstab \
+        "/mnt/etc/fstab" \
+        "$EFI_UUID" \
+        "$ESP_MOUNT" \
+        "$DEFAULT_POOL_NAME" \
+        "$CREATE_SWAP"
     
     success "fstab configured"
 }
