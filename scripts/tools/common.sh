@@ -1,1402 +1,913 @@
-#!/bin/bash
-# filepath: c:\Proj\void-linux.org\scripts\zfs-post-update-verify.sh
-# ZFS Post-Update Verification Script
-# Comprehensive verification after ZFS/kernel updates
-# Aligned with zfs-void-install.sh structure and best practices
+#!/usr/bin/env bash
+# filepath: common.sh
+# Common Library for Bash Scripts
+# Version: 2.1
+# Description: Generic shared functions for logging, colors, and utilities
+#
+# This library provides:
+# - Color definitions and terminal formatting
+# - Logging and output formatting (categorized by level)
+# - Error handling and validation
+# - File and directory operations
+# - Interactive user input
+# - System information utilities
+# - Cleanup handlers
+#
+# This library is FILESYSTEM-AGNOSTIC
+# No ZFS-specific, Btrfs-specific, or other filesystem code
+#
+# Usage:
+#   source /usr/local/lib/zfs-scripts/common.sh
 
-set -euo pipefail
+# ============================================
+# LIBRARY INITIALIZATION
+# ============================================
 
-# Configuration
-CONFIG_FILE="/etc/zfs-update.conf"
-LOG_FILE="/var/log/zfs-post-verify-$(date +%Y%m%d-%H%M%S).log"
+# Prevent multiple sourcing
+if [[ -n "${COMMON_LIBRARY_LOADED:-}" ]]; then
+    return 0
+fi
+readonly COMMON_LIBRARY_LOADED=1
 
-# Global variables for cross-function use
-RUNNING_KERNEL=""
-LATEST_KERNEL=""
-ZFS_MODULE_VERSION=""
-ZFS_USERLAND_VERSION=""
-KERNEL_MISMATCH=false
+# Library metadata
+readonly COMMON_VERSION="2.1"
+readonly COMMON_DATE="2025-12-09"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[1;94m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m' # No Color
+# ============================================
+# CONFIGURATION
+# ============================================
 
-# Counters for final summary
-CHECKS_PASSED=0
-CHECKS_FAILED=0
-CHECKS_WARNED=0
-CRITICAL_FAILURES=0
+# Default log file (can be overridden by sourcing script)
+LOG_FILE="${LOG_FILE:-/var/log/script.log}"
 
-log() {
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+# Log levels
+readonly LOG_LEVEL_DEBUG=0
+readonly LOG_LEVEL_INFO=1
+readonly LOG_LEVEL_WARNING=2
+readonly LOG_LEVEL_ERROR=3
+readonly LOG_LEVEL_NONE=4
 
-success() {
-    log "${GREEN}✓ $1${NC}"
-    CHECKS_PASSED=$((CHECKS_PASSED + 1))
-}
+# Current log level (default: INFO)
+CURRENT_LOG_LEVEL="${CURRENT_LOG_LEVEL:-$LOG_LEVEL_INFO}"
 
-warning() {
-    log "${YELLOW}⚠ WARNING: $1${NC}"
-    CHECKS_WARNED=$((CHECKS_WARNED + 1))
-}
+# Enable/disable log file output
+USE_LOG_FILE="${USE_LOG_FILE:-true}"
 
-error() {
-    log "${RED}✗ ERROR: $1${NC}"
-    CHECKS_FAILED=$((CHECKS_FAILED + 1))
-}
+# Track if log file is writable
+LOG_FILE_WRITABLE=false
 
-critical_error() {
-    log "${RED}✗✗ CRITICAL ERROR: $1${NC}"
-    CHECKS_FAILED=$((CHECKS_FAILED + 1))
-    CRITICAL_FAILURES=$((CRITICAL_FAILURES + 1))
-}
+# Cleanup handlers array
+_cleanup_handlers=()
 
-info() {
-    log "${BLUE}ℹ INFO: $1${NC}"
-}
+# ============================================
+# COLOR DEFINITIONS
+# ============================================
 
-header() {
-    echo ""
-    log "${BOLD}${CYAN}=========================================="
-    log "$1"
-    log "==========================================${NC}"
-    echo ""
-}
+# Detect if we should use colors
+if [[ -t 1 ]] && [[ "${USE_COLORS:-true}" == "true" ]]; then
+    # Standard colors
+    readonly BLUE='\033[1;94m'      # Light blue for better visibility
+    readonly BOLD='\033[1m'
+    readonly CYAN='\033[0;36m'
+    readonly DIM='\033[2m'
+    readonly GREEN='\033[0;32m'
+    readonly MAGENTA='\033[0;35m'
+    readonly NC='\033[0m'           # No Color / Reset
+    readonly RED='\033[0;31m'
+    readonly UNDERLINE='\033[4m'
+    readonly WHITE='\033[1;37m'
+    readonly YELLOW='\033[1;33m'
+    
+    # Semantic colors (for consistency)
+    readonly COLOR_DEBUG="$CYAN"
+    readonly COLOR_ERROR="$RED"
+    readonly COLOR_HEADER="$MAGENTA"
+    readonly COLOR_INFO="$BLUE"
+    readonly COLOR_SUCCESS="$GREEN"
+    readonly COLOR_WARNING="$YELLOW"
+else
+    # No colors
+    readonly BLUE=''
+    readonly BOLD=''
+    readonly CYAN=''
+    readonly DIM=''
+    readonly GREEN=''
+    readonly MAGENTA=''
+    readonly NC=''
+    readonly RED=''
+    readonly UNDERLINE=''
+    readonly WHITE=''
+    readonly YELLOW=''
+    readonly COLOR_DEBUG=''
+    readonly COLOR_ERROR=''
+    readonly COLOR_HEADER=''
+    readonly COLOR_INFO=''
+    readonly COLOR_SUCCESS=''
+    readonly COLOR_WARNING=''
+fi
 
-error_exit() {
-    critical_error "$1"
-    log "Post-update verification failed with critical errors."
-    exit 1
-}
+# ============================================
+# SYMBOLS FOR VISUAL OUTPUT
+# ============================================
 
-check_root() {
-    if [ "$EUID" -ne 0 ]; then
-        error_exit "This script must be run as root"
-    fi
-}
+# Detect if terminal supports UTF-8
+if [[ "${LANG:-}" =~ UTF-8 ]] && [[ -t 1 ]]; then
+    USE_UTF8_SYMBOLS=true
+else
+    USE_UTF8_SYMBOLS=false
+fi
 
-load_config() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        info "No configuration file found at $CONFIG_FILE"
-        info "Running in standalone mode"
+# Use UTF-8 symbols if supported, ASCII fallback otherwise
+if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+    readonly SYMBOL_ARROW="→"
+    readonly SYMBOL_BULLET="•"
+    readonly SYMBOL_DEBUG="🔍"
+    readonly SYMBOL_ERROR="✗"
+    readonly SYMBOL_INFO="ℹ"
+    readonly SYMBOL_SUCCESS="✓"
+    readonly SYMBOL_WARNING="⚠"
+else
+    readonly SYMBOL_ARROW="->"
+    readonly SYMBOL_BULLET="*"
+    readonly SYMBOL_DEBUG="[>>]"
+    readonly SYMBOL_ERROR="[!!]"
+    readonly SYMBOL_INFO="[ii]"
+    readonly SYMBOL_SUCCESS="[OK]"
+    readonly SYMBOL_WARNING="[**]"
+fi
+
+# ============================================
+# INTERNAL FUNCTIONS
+# ============================================
+
+# Initialize log file
+_init_log_file() {
+    if [[ "$USE_LOG_FILE" != "true" ]] || [[ -z "$LOG_FILE" ]]; then
         return 0
     fi
     
-    source "$CONFIG_FILE"
-    
-    # Set defaults for variables that might not exist
-    ZFSBOOTMENU=${ZFSBOOTMENU:-false}
-    POOLS_EXIST=${POOLS_EXIST:-false}
-    KERNEL_UPDATED=${KERNEL_UPDATED:-false}
-    DRACUT_UPDATED=${DRACUT_UPDATED:-false}
-    ZFS_UPDATED=${ZFS_UPDATED:-false}
-    BACKUP_DIR=${BACKUP_DIR:-""}
-    ZFS_COUNT=${ZFS_COUNT:-0}
-    ZBM_COUNT=${ZBM_COUNT:-0}
-    DRACUT_COUNT=${DRACUT_COUNT:-0}
-    KERNEL_COUNT=${KERNEL_COUNT:-0}
-    FIRMWARE_COUNT=${FIRMWARE_COUNT:-0}
-    TOTAL_UPDATES=${TOTAL_UPDATES:-0}
-    ESP_MOUNT=${ESP_MOUNT:-/boot/efi}
-    BOOT_POOLS=${BOOT_POOLS:-""}
-    INSTALL_SNAPSHOT_NAME=${INSTALL_SNAPSHOT_NAME:-""}
-    
-    info "Configuration loaded from $CONFIG_FILE"
-    log "System type: $([ "$ZFSBOOTMENU" = true ] && echo "ZFSBootMenu" || echo "Traditional")"
-    log "Pools exist: $POOLS_EXIST"
-    log "Updates applied - Kernel: $KERNEL_UPDATED, ZFS: $ZFS_UPDATED, Dracut: $DRACUT_UPDATED"
-    log "Total updates performed: $TOTAL_UPDATES"
-}
-
-detect_system_config() {
-    info "Detecting system configuration..."
-    
-    # Detect if ZFSBootMenu is installed
-    if command -v generate-zbm >/dev/null 2>&1; then
-        ZFSBOOTMENU=true
-        info "Detected ZFSBootMenu installation"
-    else
-        ZFSBOOTMENU=false
-        info "Traditional bootloader configuration"
-    fi
-    
-    # Detect if ZFS pools exist
-    local pool_list
-    pool_list=$(zpool list -H -o name 2>/dev/null || true)
-    if [ -n "$pool_list" ]; then
-        POOLS_EXIST=true
-        info "Detected ZFS pools: $(echo $pool_list | tr '\n' ' ')"
-    else
-        POOLS_EXIST=false
-        warning "No ZFS pools detected"
-    fi
-}
-
-verify_kernel_version() {
-    header "KERNEL VERSION VERIFICATION"
-    
-    RUNNING_KERNEL=$(uname -r)
-    info "Running kernel: $RUNNING_KERNEL"
-    
-    # Find latest installed kernel
-    local kernel_images
-    kernel_images=$(find /boot -name "vmlinuz-*" -type f 2>/dev/null | sort -V | tail -1 || true)
-    
-    if [ -n "$kernel_images" ]; then
-        LATEST_KERNEL=$(basename "$kernel_images" | sed 's/vmlinuz-//')
-        info "Latest installed kernel: $LATEST_KERNEL"
-        
-        if [ "$RUNNING_KERNEL" = "$LATEST_KERNEL" ]; then
-            success "Running latest installed kernel"
-        else
-            warning "Running kernel ($RUNNING_KERNEL) differs from latest ($LATEST_KERNEL)"
-            warning "A reboot may be required to use the latest kernel"
-            KERNEL_MISMATCH=true
-        fi
-    else
-        warning "Could not detect installed kernel images"
-    fi
-    
-    # Check kernel command line
-    local cmdline
-    cmdline=$(cat /proc/cmdline)
-    log "Kernel command line: $cmdline"
-    
-    if echo "$cmdline" | grep -q "zfs="; then
-        success "ZFS boot parameter found in kernel command line"
-    else
-        info "No explicit ZFS boot parameter (may be set by bootloader/ZBM)"
-    fi
-    
-    # Check for zbm parameters if using ZFSBootMenu
-    if [ "$ZFSBOOTMENU" = true ]; then
-        if echo "$cmdline" | grep -q "zbm"; then
-            success "ZFSBootMenu parameters detected in kernel command line"
-        else
-            info "Running under ZFSBootMenu (ZBM parameters may be dynamically set)"
-        fi
-    fi
-}
-
-verify_zfs_module() {
-    header "ZFS MODULE VERIFICATION"
-    
-    # Check if ZFS module is loaded
-    local lsmod_output
-    lsmod_output=$(lsmod)
-    if ! echo "$lsmod_output" | grep -q "^zfs "; then
-        critical_error "ZFS kernel module is not loaded!"
-        info "Try: modprobe zfs"
-        return 1
-    fi
-    
-    success "ZFS kernel module is loaded"
-    
-    # Get ZFS module version
-    local modinfo_output
-    modinfo_output=$(modinfo zfs 2>/dev/null || true)
-    
-    if [ -n "$modinfo_output" ]; then
-        ZFS_MODULE_VERSION=$(echo "$modinfo_output" | grep "^version:" | awk '{print $2}' || echo "unknown")
-        info "ZFS module version: $ZFS_MODULE_VERSION"
-        
-        # Check if module matches running kernel
-        local module_kernel
-        module_kernel=$(echo "$modinfo_output" | grep "^vermagic:" | awk '{print $2}' || echo "")
-        
-        if [ -n "$module_kernel" ] && [ "$module_kernel" = "$RUNNING_KERNEL" ]; then
-            success "ZFS module compiled for running kernel"
-        else
-            warning "ZFS module may not match running kernel"
-            warning "Module kernel: $module_kernel, Running: $RUNNING_KERNEL"
-        fi
-    else
-        warning "Could not retrieve ZFS module information"
-    fi
-    
-    # Check ZFS module parameters
-    if [ -d /sys/module/zfs/parameters ]; then
-        local zfs_arc_max
-        zfs_arc_max=$(cat /sys/module/zfs/parameters/zfs_arc_max 2>/dev/null || echo "0")
-        if [ "$zfs_arc_max" != "0" ]; then
-            info "ZFS ARC max: $((zfs_arc_max / 1024 / 1024 / 1024))GB"
-        fi
-    fi
-}
-
-verify_zfs_userland() {
-    header "ZFS USERLAND TOOLS VERIFICATION"
-    
-    # Check zfs command
-    if ! command -v zfs >/dev/null 2>&1; then
-        critical_error "zfs command not found!"
-        return 1
-    fi
-    
-    if ! command -v zpool >/dev/null 2>&1; then
-        critical_error "zpool command not found!"
-        return 1
-    fi
-    
-    success "ZFS userland tools are available"
-    
-    # Get userland version
-    local zfs_version_output
-    zfs_version_output=$(zfs version 2>/dev/null || true)
-    
-    if [ -n "$zfs_version_output" ]; then
-        ZFS_USERLAND_VERSION=$(echo "$zfs_version_output" | grep "zfs-" | head -1 | awk '{print $2}' || echo "unknown")
-        info "ZFS userland version: $ZFS_USERLAND_VERSION"
-        
-        # Compare module and userland versions
-        if [ -n "$ZFS_MODULE_VERSION" ] && [ "$ZFS_MODULE_VERSION" != "unknown" ]; then
-            if [ "$ZFS_MODULE_VERSION" = "$ZFS_USERLAND_VERSION" ]; then
-                success "ZFS module and userland versions match"
-            else
-                warning "Version mismatch - Module: $ZFS_MODULE_VERSION, Userland: $ZFS_USERLAND_VERSION"
-            fi
-        fi
-    else
-        warning "Could not retrieve ZFS userland version"
-    fi
-    
-    # Test basic ZFS functionality
-    if zfs list >/dev/null 2>&1; then
-        success "ZFS list command works"
-    else
-        critical_error "ZFS list command failed!"
-        return 1
-    fi
-    
-    if zpool list >/dev/null 2>&1; then
-        success "ZFS pool list command works"
-    else
-        critical_error "ZFS pool list command failed!"
-        return 1
-    fi
-}
-
-verify_hostid() {
-    header "HOSTID VERIFICATION"
-    
-    if [ ! -f /etc/hostid ]; then
-        critical_error "hostid file missing at /etc/hostid"
-        info "Run: zgenhostid -f"
-        return 1
-    fi
-    
-    success "hostid file exists"
-    
-    local hostid_size
-    hostid_size=$(stat -c %s /etc/hostid 2>/dev/null || echo "0")
-    
-    if [ "$hostid_size" -ne 4 ]; then
-        critical_error "hostid file has incorrect size: $hostid_size bytes (expected 4)"
-        info "Run: zgenhostid -f"
-        return 1
-    fi
-    
-    success "hostid file has correct size (4 bytes)"
-    
-    local hostid_cmd hostid_file
-    hostid_cmd=$(hostid)
-    hostid_file=$(od -An -tx4 /etc/hostid | tr -d ' \n')
-    
-    info "hostid command: $hostid_cmd"
-    info "hostid file:    $hostid_file"
-    
-    if [ "$hostid_cmd" = "$hostid_file" ]; then
-        success "Host ID is consistent between command and file"
-    else
-        critical_error "Host ID mismatch between command ($hostid_cmd) and file ($hostid_file)"
-        info "Run: zgenhostid -f"
-        return 1
-    fi
-}
-
-verify_encryption_keys() {
-    header "ENCRYPTION KEY VERIFICATION"
-    
-    local key_file="/etc/zfs/zroot.key"
-    
-    if [ ! -f "$key_file" ]; then
-        info "No encryption key found at $key_file"
-        info "System may not use encrypted ZFS pools"
-        return 0
-    fi
-    
-    success "ZFS encryption key exists at $key_file"
-    
-    # Check permissions
-    local key_perms
-    key_perms=$(stat -c %a "$key_file")
-    
-    if [ "$key_perms" = "000" ] || [ "$key_perms" = "400" ] || [ "$key_perms" = "600" ]; then
-        success "Encryption key has secure permissions: $key_perms"
-    else
-        warning "Encryption key has permissive permissions: $key_perms"
-        warning "Recommended: chmod 400 $key_file"
-    fi
-    
-    # Check if key is being used
-    if [ "$POOLS_EXIST" = true ]; then
-        local encrypted_datasets
-        encrypted_datasets=$(zfs get -H -o name,value encryption 2>/dev/null | grep -v "off$" | awk '{print $1}' || true)
-        
-        if [ -n "$encrypted_datasets" ]; then
-            success "Found encrypted datasets using encryption"
-            echo "$encrypted_datasets" | while read -r dataset; do
-                local keylocation
-                keylocation=$(zfs get -H -o value keylocation "$dataset" 2>/dev/null || true)
-                info "  $dataset: $keylocation"
-                
-                if [ "$keylocation" = "file://$key_file" ]; then
-                    success "  Key location correctly configured"
-                fi
-            done
-        else
-            info "No encrypted datasets found"
-        fi
-    fi
-    
-    # Check for key backup (as per install script)
-    local backup_key="/root/zfs-keys/zroot.key"
-    if [ -f "$backup_key" ]; then
-        success "Encryption key backup exists at $backup_key"
-        
-        if diff "$key_file" "$backup_key" &>/dev/null; then
-            success "Backup key matches primary key"
-        else
-            warning "Backup key differs from primary key"
-        fi
-    else
-        warning "No encryption key backup found at $backup_key"
-        info "Consider backing up: install -m 000 /etc/zfs/zroot.key /root/zfs-keys/"
-    fi
-}
-
-verify_zfs_services() {
-    header "ZFS RUNIT SERVICES VERIFICATION"
-    
-    local services=("zfs-import" "zfs-mount" "zfs-zed")
-    local service_dir="/etc/runit/runsvdir/default"
-    local all_enabled=true
-    
-    for service in "${services[@]}"; do
-        if [ -L "$service_dir/$service" ]; then
-            success "Service $service is enabled"
-            
-            # Check if service is running
-            if sv status "$service" >/dev/null 2>&1; then
-                local status
-                status=$(sv status "$service" 2>&1 || true)
-                if echo "$status" | grep -q "run:"; then
-                    success "  Service $service is running"
-                else
-                    warning "  Service $service is not running: $status"
-                fi
-            fi
-        else
-            critical_error "Service $service is NOT enabled"
-            info "  Enable with: ln -s /etc/sv/$service $service_dir/"
-            all_enabled=false
-        fi
-    done
-    
-    if [ "$all_enabled" = false ]; then
-        critical_error "Critical ZFS services are not enabled - system may not boot properly!"
-        return 1
-    fi
-}
-
-verify_dracut_configuration() {
-    header "DRACUT CONFIGURATION VERIFICATION"
-    
-    if ! command -v dracut >/dev/null 2>&1; then
-        critical_error "dracut command not found!"
-        return 1
-    fi
-    
-    success "dracut is installed"
-    
-    # Check dracut version
-    local dracut_version
-    dracut_version=$(dracut --version 2>/dev/null | head -1 || echo "unknown")
-    info "dracut version: $dracut_version"
-    
-    # Check main dracut configuration
-    local dracut_conf="/etc/dracut.conf"
-    if [ -f "$dracut_conf" ]; then
-        success "Main dracut configuration exists"
-        
-        # Verify recommended settings from install script
-        if grep -q 'hostonly="yes"' "$dracut_conf" 2>/dev/null; then
-            success "  hostonly mode enabled (recommended)"
-        else
-            warning "  hostonly mode not explicitly set"
-        fi
-        
-        if grep -q 'compress="zstd"' "$dracut_conf" 2>/dev/null; then
-            success "  zstd compression enabled"
-        fi
-    else
-        warning "Main dracut configuration not found: $dracut_conf"
-    fi
-    
-    # Check dracut ZFS configuration
-    local dracut_zfs_conf="/etc/dracut.conf.d/zfs.conf"
-    if [ -f "$dracut_zfs_conf" ]; then
-        success "dracut ZFS configuration exists"
-        
-        # Verify critical ZFS dracut settings from install script
-        local required_settings=(
-            'hostonly="yes"'
-            'add_dracutmodules+=" zfs "'
-            'omit_dracutmodules+=" btrfs'
-            'install_items+=" /etc/zfs/zroot.key'
-            'install_items+=" /etc/hostid'
-            'force_drivers+=" zfs'
-        )
-        
-        for setting in "${required_settings[@]}"; do
-            if grep -q "$setting" "$dracut_zfs_conf" 2>/dev/null; then
-                success "  Found: $setting"
-            else
-                warning "  Missing or different: $setting"
-            fi
-        done
-    else
-        critical_error "dracut ZFS configuration not found: $dracut_zfs_conf"
-        return 1
-    fi
-    
-    # Check for ZFS dracut module
-    local dracut_module_dirs="/usr/lib/dracut/modules.d /usr/share/dracut/modules.d"
-    local found_zfs_module=false
-    local module_dir
-    
-    for module_dir in $dracut_module_dirs; do
-        if [ -d "$module_dir" ]; then
-            if find "$module_dir" -type d -name "*zfs*" 2>/dev/null | grep -q .; then
-                found_zfs_module=true
-                local zfs_modules
-                zfs_modules=$(find "$module_dir" -type d -name "*zfs*" 2>/dev/null | xargs -n1 basename)
-                success "Found ZFS dracut module(s): $zfs_modules"
-                break
-            fi
-        fi
-    done
-    
-    if [ "$found_zfs_module" = false ]; then
-        critical_error "ZFS dracut module not found in $dracut_module_dirs"
-        return 1
-    fi
-}
-
-verify_pool_configuration() {
-    header "ZFS POOL CONFIGURATION VERIFICATION"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools to verify"
-        return 0
-    fi
-    
-    local pools
-    pools=$(zpool list -H -o name 2>/dev/null || true)
-    
-    if [ -z "$pools" ]; then
-        warning "Could not list ZFS pools"
-        return 1
-    fi
-    
-    echo "$pools" | while read -r pool; do
-        info "Verifying pool: $pool"
-        
-        # Check ashift (should be 12 per install script)
-        local ashift
-        ashift=$(zpool get -H -o value ashift "$pool" 2>/dev/null || echo "unknown")
-        if [ "$ashift" = "12" ]; then
-            success "  ashift: $ashift (optimal for modern drives)"
-        else
-            info "  ashift: $ashift (install script uses 12)"
-        fi
-        
-        # Check autotrim
-        local autotrim
-        autotrim=$(zpool get -H -o value autotrim "$pool" 2>/dev/null || echo "unknown")
-        if [ "$autotrim" = "on" ]; then
-            success "  autotrim: $autotrim (matches install script)"
-        else
-            warning "  autotrim: $autotrim (install script sets 'on')"
-        fi
-        
-        # Check compression
-        local compression
-        compression=$(zpool get -H -o value compression "$pool" 2>/dev/null || echo "unknown")
-        if [ "$compression" = "lz4" ]; then
-            success "  compression: $compression (matches install script)"
-        else
-            info "  compression: $compression (install script uses lz4)"
-        fi
-        
-        # Check cachefile property (critical per install script)
-        local cachefile
-        cachefile=$(zpool get -H -o value cachefile "$pool" 2>/dev/null || echo "unknown")
-        if [ "$cachefile" = "/etc/zfs/zpool.cache" ]; then
-            success "  cachefile: $cachefile (correctly set)"
-        else
-            critical_error "  cachefile: $cachefile (should be /etc/zfs/zpool.cache)"
-            info "  Fix with: zpool set cachefile=/etc/zfs/zpool.cache $pool"
-        fi
-        
-        # Check bootfs property
-        local bootfs
-        bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "-")
-        if [ "$bootfs" != "-" ]; then
-            success "  bootfs: $bootfs"
-        else
-            info "  bootfs: not set (may be intentional for non-boot pools)"
-        fi
-    done
-}
-
-verify_pool_status() {
-    header "ZFS POOL STATUS VERIFICATION"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools to verify"
-        return 0
-    fi
-    
-    local pools
-    pools=$(zpool list -H -o name 2>/dev/null || true)
-    
-    if [ -z "$pools" ]; then
-        warning "Could not list ZFS pools"
-        return 1
-    fi
-    
-    local pool pool_health all_healthy=true
-    
-    echo "$pools" | while read -r pool; do
-        pool_health=$(zpool list -H -o health "$pool" 2>/dev/null || echo "UNKNOWN")
-        
-        if [ "$pool_health" = "ONLINE" ]; then
-            success "Pool $pool: $pool_health"
-        else
-            error "Pool $pool: $pool_health (not healthy!)"
-            all_healthy=false
-            
-            # Show detailed status
-            log "Detailed status for $pool:"
-            zpool status "$pool" | tee -a "$LOG_FILE"
-        fi
-    done
-    
-    if [ "$all_healthy" = false ]; then
-        critical_error "One or more pools are not healthy!"
-        return 1
-    fi
-}
-
-verify_dataset_structure() {
-    header "DATASET STRUCTURE VERIFICATION"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools to verify"
-        return 0
-    fi
-    
-    # Check for boot environment structure (per install script)
-    if zfs list zroot/ROOT &>/dev/null; then
-        success "Boot environment container exists: zroot/ROOT"
-        
-        # Check mountpoint
-        local root_mountpoint
-        root_mountpoint=$(zfs get -H -o value mountpoint zroot/ROOT 2>/dev/null || echo "")
-        if [ "$root_mountpoint" = "none" ]; then
-            success "  zroot/ROOT mountpoint: none (correct per install script)"
-        else
-            warning "  zroot/ROOT mountpoint: $root_mountpoint (should be 'none')"
-        fi
-        
-        # Check canmount
-        local root_canmount
-        root_canmount=$(zfs get -H -o value canmount zroot/ROOT 2>/dev/null || echo "")
-        if [ "$root_canmount" = "off" ]; then
-            success "  zroot/ROOT canmount: off (correct)"
-        else
-            info "  zroot/ROOT canmount: $root_canmount"
-        fi
-        
-        # List boot environments
-        local boot_envs
-        boot_envs=$(zfs list -H -o name -r zroot/ROOT 2>/dev/null | grep -v "^zroot/ROOT$" || true)
-        if [ -n "$boot_envs" ]; then
-            success "Boot environments found:"
-            echo "$boot_envs" | while read -r be; do
-                log "  - $be"
-            done
-        else
-            warning "No boot environments found under zroot/ROOT"
-        fi
-        
-        # Check bootfs property
-        local bootfs
-        bootfs=$(zpool get -H -o value bootfs zroot 2>/dev/null || echo "-")
-        if [ "$bootfs" != "-" ]; then
-            success "bootfs property set: $bootfs"
-            
-            # Verify bootfs exists
-            if zfs list "$bootfs" &>/dev/null; then
-                success "  bootfs dataset exists"
-                
-                # Check if it's under ROOT
-                if echo "$bootfs" | grep -q "zroot/ROOT/"; then
-                    success "  bootfs is under zroot/ROOT (correct structure)"
-                fi
-            else
-                critical_error "  bootfs dataset does not exist!"
-            fi
-        else
-            warning "bootfs property not set (may prevent booting)"
-        fi
-    else
-        warning "Boot environment container zroot/ROOT does not exist"
-        info "This pool may not follow the recommended structure"
-    fi
-    
-    # Check data structure (per install script)
-    if zfs list zroot/data &>/dev/null; then
-        success "Data container exists: zroot/data"
-        
-        # Check home dataset
-        if zfs list zroot/data/home &>/dev/null; then
-            success "  Home dataset exists: zroot/data/home"
-            
-            local home_mountpoint
-            home_mountpoint=$(zfs get -H -o value mountpoint zroot/data/home 2>/dev/null || echo "")
-            if [ "$home_mountpoint" = "/home" ]; then
-                success "    Mountpoint: /home (correct)"
-            else
-                warning "    Mountpoint: $home_mountpoint (expected /home)"
-            fi
-        else
-            info "  Home dataset not found (may not exist in all setups)"
-        fi
-        
-        # Check root home dataset
-        if zfs list zroot/data/root &>/dev/null; then
-            success "  Root home dataset exists: zroot/data/root"
-            
-            local root_home_mountpoint
-            root_home_mountpoint=$(zfs get -H -o value mountpoint zroot/data/root 2>/dev/null || echo "")
-            if [ "$root_home_mountpoint" = "/root" ]; then
-                success "    Mountpoint: /root (correct)"
-            else
-                warning "    Mountpoint: $root_home_mountpoint (expected /root)"
-            fi
-        else
-            info "  Root home dataset not found (may not exist in all setups)"
-        fi
-    else
-        info "Data container zroot/data does not exist (may not be used)"
-    fi
-    
-    # Check for ZFSBootMenu commandline property
-    if [ "$ZFSBOOTMENU" = true ]; then
-        local zbm_cmdline
-        zbm_cmdline=$(zfs get -H -o value org.zfsbootmenu:commandline zroot/ROOT 2>/dev/null || echo "")
-        
-        if [ -n "$zbm_cmdline" ] && [ "$zbm_cmdline" != "-" ]; then
-            success "ZFSBootMenu commandline property set: $zbm_cmdline"
-        else
-            warning "ZFSBootMenu commandline property not set on zroot/ROOT"
-            info "Install script sets: ro quiet loglevel=0"
-        fi
-    fi
-}
-
-verify_pool_import() {
-    header "POOL IMPORT CAPABILITY VERIFICATION"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools to verify"
-        return 0
-    fi
-    
-    info "Testing pool import capability (dry-run)..."
-    
-    local pools
-    pools=$(zpool list -H -o name 2>/dev/null || true)
-    
-    if [ -z "$pools" ]; then
-        warning "Could not list ZFS pools"
-        return 1
-    fi
-    
-    echo "$pools" | while read -r pool; do
-        # Test import with -N (no mount)
-        if zpool import -d /dev/disk/by-id -N "$pool" &>/dev/null; then
-            success "Pool $pool can be imported from /dev/disk/by-id"
-        else
-            # Pool already imported, try to verify it's importable
-            if zpool status "$pool" &>/dev/null; then
-                success "Pool $pool is already imported and accessible"
-            else
-                error "Pool $pool import test failed"
-            fi
-        fi
-    done
-    
-    # Check zpool.cache
-    if [ -f /etc/zfs/zpool.cache ]; then
-        success "zpool.cache exists at /etc/zfs/zpool.cache"
-        
-        local cache_size
-        cache_size=$(stat -c %s /etc/zfs/zpool.cache 2>/dev/null || echo "0")
-        if [ "$cache_size" -gt 0 ]; then
-            success "  zpool.cache is not empty (${cache_size} bytes)"
-        else
-            warning "  zpool.cache is empty"
-        fi
-    else
-        warning "zpool.cache not found at /etc/zfs/zpool.cache"
-        info "Pools may take longer to import on boot"
-        info "Generate with: zpool set cachefile=/etc/zfs/zpool.cache <pool>"
-    fi
-}
-
-verify_datasets_mounted() {
-    header "DATASET MOUNT VERIFICATION"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools to verify"
-        return 0
-    fi
-    
-    local datasets
-    datasets=$(zfs list -H -o name,mounted,mountpoint 2>/dev/null || true)
-    
-    if [ -z "$datasets" ]; then
-        warning "Could not list ZFS datasets"
-        return 1
-    fi
-    
-    local mount_issues=0
-    
-    echo "$datasets" | while read -r name mounted mountpoint; do
-        # Skip datasets with no mountpoint or legacy mountpoint
-        if [ "$mountpoint" = "none" ] || [ "$mountpoint" = "legacy" ] || [ "$mountpoint" = "-" ]; then
-            continue
-        fi
-        
-        if [ "$mounted" = "yes" ]; then
-            # Verify mountpoint actually exists and is mounted
-            if mountpoint -q "$mountpoint" 2>/dev/null; then
-                success "Dataset $name mounted at $mountpoint"
-            else
-                warning "Dataset $name reports mounted but $mountpoint is not a mountpoint"
-                mount_issues=$((mount_issues + 1))
-            fi
-        else
-            # Check canmount property
-            local canmount
-            canmount=$(zfs get -H -o value canmount "$name" 2>/dev/null || echo "on")
-            
-            if [ "$canmount" = "off" ] || [ "$canmount" = "noauto" ]; then
-                info "Dataset $name not mounted (canmount=$canmount)"
-            else
-                warning "Dataset $name should be mounted at $mountpoint but is not"
-                mount_issues=$((mount_issues + 1))
-            fi
-        fi
-    done
-    
-    if [ "$mount_issues" -eq 0 ]; then
-        success "All mountable datasets are properly mounted"
-    else
-        warning "$mount_issues dataset(s) have mount issues"
-    fi
-}
-
-verify_initramfs() {
-    header "INITRAMFS VERIFICATION"
-    
-    local current_kernel
-    current_kernel=$(uname -r)
-    local initramfs_path="/boot/initramfs-${current_kernel}.img"
-    
-    if [ ! -f "$initramfs_path" ]; then
-        critical_error "Initramfs not found for current kernel: $initramfs_path"
-        info "Generate with: xbps-reconfigure -f linux${current_kernel#[0-9]*}"
-        return 1
-    fi
-    
-    success "Initramfs exists for current kernel: $initramfs_path"
-    
-    # Check initramfs size
-    local initramfs_size_mb
-    initramfs_size_mb=$(du -m "$initramfs_path" | awk '{print $1}')
-    info "Initramfs size: ${initramfs_size_mb}MB"
-    
-    if [ "$initramfs_size_mb" -lt 10 ]; then
-        warning "Initramfs seems unusually small (${initramfs_size_mb}MB)"
-    else
-        success "Initramfs size looks reasonable"
-    fi
-    
-    # Check initramfs contents
-    info "Checking initramfs contents..."
-    
-    if command -v lsinitrd >/dev/null 2>&1; then
-        # Check for critical files/modules per install script requirements
-        local lsinitrd_output
-        lsinitrd_output=$(lsinitrd "$initramfs_path" 2>/dev/null || true)
-        
-        if [ -n "$lsinitrd_output" ]; then
-            # Check for ZFS module
-            if echo "$lsinitrd_output" | grep -q "zfs.ko"; then
-                success "  ZFS kernel module included"
-            else
-                critical_error "  ZFS kernel module NOT found in initramfs"
-            fi
-            
-            # Check for hostid (required per install script)
-            if echo "$lsinitrd_output" | grep -q "etc/hostid"; then
-                success "  hostid file included"
-            else
-                critical_error "  hostid file NOT found in initramfs"
-            fi
-            
-            # Check for encryption key (if exists)
-            if [ -f /etc/zfs/zroot.key ]; then
-                if echo "$lsinitrd_output" | grep -q "etc/zfs/zroot.key"; then
-                    success "  Encryption key included"
-                else
-                    critical_error "  Encryption key NOT found in initramfs"
-                    info "  Key should be included per dracut zfs.conf"
-                fi
-            fi
-            
-            # Check for zpool.cache
-            if echo "$lsinitrd_output" | grep -q "etc/zfs/zpool.cache"; then
-                success "  zpool.cache included"
-            else
-                warning "  zpool.cache not found in initramfs (may cause slow boot)"
-            fi
-            
-            # Check for dracut ZFS modules
-            if echo "$lsinitrd_output" | grep -q "dracut.*zfs"; then
-                success "  Dracut ZFS module included"
-            else
-                warning "  Dracut ZFS module may not be included"
-            fi
-        else
-            warning "Could not list initramfs contents"
-        fi
-    else
-        info "lsinitrd not available, using basic check"
-        
-        # Basic check by extracting to temp directory
-        local temp_dir
-        temp_dir=$(mktemp -d)
-        
-        if cd "$temp_dir" && zcat "$initramfs_path" 2>/dev/null | cpio -idm --quiet 2>/dev/null; then
-            # Check for ZFS
-            if [ -f "usr/lib/modules/${current_kernel}/kernel/fs/zfs/zfs.ko" ] || \
-               find . -name "zfs.ko*" 2>/dev/null | grep -q .; then
-                success "  ZFS module found in initramfs"
-            else
-                critical_error "  ZFS module NOT found in initramfs"
-            fi
-            
-            # Check for hostid
-            if [ -f "etc/hostid" ]; then
-                success "  hostid included"
-            else
-                critical_error "  hostid NOT included"
-            fi
-            
-            # Check for key
-            if [ -f /etc/zfs/zroot.key ]; then
-                if [ -f "etc/zfs/zroot.key" ]; then
-                    success "  Encryption key included"
-                else
-                    critical_error "  Encryption key NOT included"
-                fi
-            fi
-            
-            cd - >/dev/null
-        else
-            warning "Could not extract initramfs for detailed check"
-        fi
-        
-        rm -rf "$temp_dir"
-    fi
-}
-
-verify_zfsbootmenu() {
-    if [ "$ZFSBOOTMENU" != true ]; then
-        info "ZFSBootMenu not in use, skipping ZBM checks"
-        return 0
-    fi
-    
-    header "ZFSBOOTMENU VERIFICATION"
-    
-    # Check ZBM command
-    if ! command -v generate-zbm >/dev/null 2>&1; then
-        critical_error "generate-zbm command not found but ZFSBOOTMENU=true"
-        return 1
-    fi
-    
-    success "ZFSBootMenu tools are installed"
-    
-    # Check ZBM version
-    local zbm_version
-    zbm_version=$(generate-zbm --version 2>/dev/null | head -1 || echo "unknown")
-    info "ZFSBootMenu version: $zbm_version"
-    
-    # Check ZBM configuration - primary location per install script
-    local zbm_config="/etc/zfsbootmenu/config.yaml"
-    if [ ! -f "$zbm_config" ]; then
-        # Try fallback location
-        zbm_config="/etc/zfsbootmenu.yaml"
-        if [ ! -f "$zbm_config" ]; then
-            critical_error "ZFSBootMenu configuration not found"
-            info "Expected at: /etc/zfsbootmenu/config.yaml"
+    local log_dir
+    log_dir="$(dirname "$LOG_FILE")"
+    
+    # Create log directory if it doesn't exist
+    if [[ ! -d "$log_dir" ]]; then
+        if ! mkdir -p "$log_dir" 2>/dev/null; then
+            USE_LOG_FILE=false
+            echo "WARNING: Could not create log directory: $log_dir" >&2
+            echo "WARNING: Logging to file disabled" >&2
             return 1
         fi
     fi
     
-    success "ZFSBootMenu configuration found: $zbm_config"
-    
-    # Verify configuration settings per install script
-    if grep -q "Enabled: true" "$zbm_config" 2>/dev/null; then
-        success "  EFI generation enabled"
+    # Check if we can write to the log file
+    if touch "$LOG_FILE" 2>/dev/null && [[ -w "$LOG_FILE" ]]; then
+        LOG_FILE_WRITABLE=true
+        # Add header to log file
+        {
+            echo ""
+            echo "=============================================="
+            echo "Log started: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "Script: ${0##*/}"
+            echo "User: $(whoami)"
+            echo "PID: $$"
+            echo "=============================================="
+            echo ""
+        } >> "$LOG_FILE" 2>/dev/null
     else
-        info "  Checking EFI generation setting..."
-    fi
-    
-    # Check ESP mount
-    local esp_mount="${ESP_MOUNT:-/boot/efi}"
-    
-    if [ ! -d "$esp_mount" ]; then
-        critical_error "ESP mount point does not exist: $esp_mount"
+        USE_LOG_FILE=false
+        LOG_FILE_WRITABLE=false
+        echo "WARNING: Cannot write to log file: $LOG_FILE" >&2
+        echo "WARNING: Logging to file disabled" >&2
         return 1
     fi
     
-    local esp_findmnt
-    esp_findmnt=$(findmnt "$esp_mount" 2>/dev/null || true)
-    
-    if [ -z "$esp_findmnt" ]; then
-        critical_error "ESP is not mounted: $esp_mount"
-        info "Check /etc/fstab and mount the ESP"
-        return 1
-    fi
-    
-    success "ESP is mounted: $esp_mount"
-    
-    # Check ESP filesystem
-    local esp_fstype
-    esp_fstype=$(findmnt -n -o FSTYPE "$esp_mount" 2>/dev/null || echo "unknown")
-    if [ "$esp_fstype" = "vfat" ]; then
-        success "  ESP filesystem: $esp_fstype (correct)"
-    else
-        warning "  ESP filesystem: $esp_fstype (expected vfat)"
-    fi
-    
-    # Check for ZBM EFI files - Match installation script path: /boot/efi/EFI/ZBM/
-    local zbm_efi_path="$esp_mount/EFI/ZBM/vmlinuz.efi"
-    
-    if [ -f "$zbm_efi_path" ]; then
-        success "ZBM EFI image exists: $zbm_efi_path"
-        
-        local zbm_mtime
-        zbm_mtime=$(stat -c %y "$zbm_efi_path" | cut -d'.' -f1)
-        info "ZBM EFI image last modified: $zbm_mtime"
-        
-        # Check backup
-        local zbm_backup="$esp_mount/EFI/ZBM/vmlinuz-backup.efi"
-        if [ -f "$zbm_backup" ]; then
-            success "ZBM backup EFI image exists"
-        else
-            warning "ZBM backup EFI image not found"
-            info "Install script creates: $zbm_backup"
-        fi
-    else
-        critical_error "ZBM EFI image not found: $zbm_efi_path"
-        info "Generate with: generate-zbm"
-        return 1
-    fi
-    
-    # Check ZBM dracut configuration
-    local zbm_dracut_dir="/etc/zfsbootmenu/dracut.conf.d"
-    if [ -d "$zbm_dracut_dir" ]; then
-        success "ZBM dracut configuration directory exists"
-        
-        # Check for keymap configuration (per install script)
-        if [ -f "$zbm_dracut_dir/keymap.conf" ]; then
-            success "  ZBM keymap configuration exists"
-        else
-            info "  ZBM keymap configuration not found (optional)"
-        fi
-    else
-        warning "ZBM dracut configuration directory not found: $zbm_dracut_dir"
-    fi
-    
-    # Check cmdline.d for keymap (per install script)
-    if [ -f "/etc/cmdline.d/keymap.conf" ]; then
-        success "Keymap cmdline configuration exists"
-    else
-        info "Keymap cmdline configuration not found (optional)"
-    fi
-    
-    # Check EFI boot entries
-    if command -v efibootmgr >/dev/null 2>&1; then
-        local efi_entries
-        efi_entries=$(efibootmgr 2>/dev/null || true)
-        
-        if [ -n "$efi_entries" ]; then
-            info "EFI boot entries:"
-            echo "$efi_entries" | tee -a "$LOG_FILE"
-            
-            if echo "$efi_entries" | grep -q "ZFSBootMenu"; then
-                success "ZFSBootMenu entries found in EFI"
-                
-                # Check for backup entry (per install script)
-                if echo "$efi_entries" | grep -q "ZFSBootMenu.*Backup"; then
-                    success "  ZFSBootMenu backup entry found"
-                else
-                    info "  ZFSBootMenu backup entry not found"
-                fi
-            else
-                warning "No ZFSBootMenu entries found in EFI boot manager"
-                info "Add with: efibootmgr --create --disk /dev/XXX --part 1 --label 'ZFSBootMenu' --loader '\\EFI\\ZBM\\vmlinuz.efi'"
-            fi
-        else
-            warning "Could not read EFI boot entries"
-        fi
-    else
-        info "efibootmgr not available, skipping EFI entry check"
-    fi
+    return 0
 }
 
-verify_fstab() {
-    header "FSTAB VERIFICATION"
+# Core logging function
+_log() {
+    local level="$1"
+    local color="$2"
+    local symbol="$3"
+    local message="$4"
+    local level_value="$5"
     
-    if [ ! -f /etc/fstab ]; then
-        warning "No /etc/fstab file found"
-        return 1
-    fi
-    
-    success "/etc/fstab exists"
-    
-    # Check ESP entry (required per install script)
-    local esp_mount="${ESP_MOUNT:-/boot/efi}"
-    if grep -q "$esp_mount" /etc/fstab 2>/dev/null; then
-        success "ESP mount entry found in fstab"
-        
-        # Verify it's using UUID (best practice)
-        if grep "$esp_mount" /etc/fstab | grep -q "UUID="; then
-            success "  Using UUID for ESP (best practice)"
-        else
-            info "  Not using UUID for ESP"
-        fi
-        
-        # Check filesystem type
-        if grep "$esp_mount" /etc/fstab | grep -q "vfat"; then
-            success "  ESP filesystem type: vfat (correct)"
-        else
-            warning "  ESP filesystem type may be incorrect"
-        fi
-    else
-        warning "No ESP mount entry found in fstab for $esp_mount"
-    fi
-    
-    # Check for swap (optional per install script)
-    if grep -q "^/dev/zvol/zroot/swap" /etc/fstab 2>/dev/null; then
-        success "ZFS swap volume entry found in fstab"
-        
-        # Verify swap volume exists
-        if [ -e /dev/zvol/zroot/swap ]; then
-            success "  Swap volume exists"
-            
-            # Check if swap is active
-            if swapon --show | grep -q "zroot/swap"; then
-                success "  Swap is active"
-            else
-                warning "  Swap volume exists but is not active"
-            fi
-        else
-            warning "  Swap volume entry in fstab but volume does not exist"
-        fi
-    else
-        info "No ZFS swap volume configured (optional)"
-    fi
-    
-    # Check for tmpfs entries (recommended per install script)
-    if grep -q "tmpfs.*/tmp" /etc/fstab 2>/dev/null; then
-        success "/tmp mounted as tmpfs (recommended)"
-    else
-        info "/tmp not configured as tmpfs"
-    fi
-    
-    if grep -q "tmpfs.*/dev/shm" /etc/fstab 2>/dev/null; then
-        success "/dev/shm mounted as tmpfs"
-    else
-        info "/dev/shm not explicitly configured in fstab"
-    fi
-}
-
-test_basic_zfs_operations() {
-    header "BASIC ZFS OPERATIONS TEST"
-    
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools available for testing"
+    # Check log level
+    if [[ $level_value -lt $CURRENT_LOG_LEVEL ]]; then
         return 0
     fi
     
-    local test_pool
-    test_pool=$(zpool list -H -o name 2>/dev/null | head -1 || true)
+    local timestamp
+    timestamp="[$(date '+%Y-%m-%d %H:%M:%S')]"
     
-    if [ -z "$test_pool" ]; then
-        warning "Could not determine test pool"
+    local formatted_message
+    if [[ -n "$color" ]]; then
+        formatted_message="${color}${symbol} ${level}: ${message}${NC}"
+    else
+        formatted_message="${symbol} ${level}: ${message}"
+    fi
+    
+    # Output to terminal
+    echo -e "${timestamp} ${formatted_message}"
+    
+    # Output to log file (without colors)
+    if [[ "$LOG_FILE_WRITABLE" == "true" ]]; then
+        # Strip ANSI color codes for log file
+        local clean_message="${symbol} ${level}: ${message}"
+        echo "${timestamp} ${clean_message}" >> "$LOG_FILE" 2>/dev/null || {
+            LOG_FILE_WRITABLE=false
+            echo "WARNING: Lost write access to log file" >&2
+        }
+    fi
+}
+
+# ============================================
+# CLEANUP HANDLERS
+# ============================================
+
+# Register cleanup handler
+register_cleanup() {
+    local handler="$1"
+    _cleanup_handlers+=("$handler")
+}
+
+# Execute all cleanup handlers
+run_cleanup() {
+    if [[ ${#_cleanup_handlers[@]} -gt 0 ]]; then
+        info "Running cleanup handlers..."
+        
+        for handler in "${_cleanup_handlers[@]}"; do
+            debug "Executing cleanup: $handler"
+            eval "$handler" || warning "Cleanup handler failed: $handler"
+        done
+        
+        _cleanup_handlers=()
+    fi
+}
+
+# ============================================
+# FILE OPERATIONS
+# ============================================
+
+# Create backup of file
+backup_file() {
+    local file="$1"
+    local backup_suffix="${2:-.backup.$(timestamp)}"
+    
+    if [[ ! -f "$file" ]]; then
+        warning "Cannot backup non-existent file: $file"
         return 1
     fi
     
-    info "Testing basic operations on pool: $test_pool"
+    local backup_file="${file}${backup_suffix}"
     
-    # Test dataset creation and deletion
-    local test_dataset="${test_pool}/test-verify-$$"
-    
-    if zfs create "$test_dataset" 2>/dev/null; then
-        success "Dataset creation successful"
-        
-        # Test snapshot creation
-        if zfs snapshot "${test_dataset}@test" 2>/dev/null; then
-            success "Snapshot creation successful"
-            
-            # Test snapshot deletion
-            if zfs destroy "${test_dataset}@test" 2>/dev/null; then
-                success "Snapshot deletion successful"
-            else
-                error "Snapshot deletion failed"
-            fi
-        else
-            error "Snapshot creation failed"
-        fi
-        
-        # Cleanup test dataset
-        if zfs destroy "$test_dataset" 2>/dev/null; then
-            success "Dataset deletion successful"
-            success "Basic ZFS operations are working correctly"
-        else
-            error "Dataset deletion failed"
-            warning "Manual cleanup required: zfs destroy $test_dataset"
-        fi
+    if cp -a "$file" "$backup_file"; then
+        success "Backup created: $backup_file"
+        return 0
     else
-        error "Dataset creation failed"
-        critical_error "Basic ZFS operations are not working"
+        error "Failed to create backup: $backup_file"
         return 1
     fi
 }
 
-check_rollback_capability() {
-    header "ROLLBACK CAPABILITY CHECK"
+# Create directory with parents
+ensure_directory() {
+    local dir="$1"
+    local perms="${2:-755}"
     
-    if [ "$POOLS_EXIST" != true ]; then
-        info "No ZFS pools available"
+    if [[ -d "$dir" ]]; then
+        debug "Directory already exists: $dir"
         return 0
     fi
     
-    # Check if installation snapshot exists
-    if [ -n "${INSTALL_SNAPSHOT_NAME:-}" ]; then
-        if zfs list -t snapshot "$INSTALL_SNAPSHOT_NAME" &>/dev/null; then
-            success "Installation snapshot exists: $INSTALL_SNAPSHOT_NAME"
-            info "System can be rolled back to post-installation state"
+    if mkdir -p "$dir"; then
+        chmod "$perms" "$dir"
+        debug "Created directory: $dir"
+        return 0
+    else
+        error "Failed to create directory: $dir"
+        return 1
+    fi
+}
+
+# ============================================
+# FORMATTING FUNCTIONS
+# ============================================
+
+# Print with bullet point
+bullet() {
+    local message="$*"
+    if [[ -n "$CYAN" ]]; then
+        echo -e "  ${CYAN}${SYMBOL_BULLET}${NC} ${message}"
+    else
+        echo "  ${SYMBOL_BULLET} ${message}"
+    fi
+    
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "  ${SYMBOL_BULLET} ${message}" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Format bytes to human-readable size
+format_bytes() {
+    local bytes="$1"
+    local units=("B" "KB" "MB" "GB" "TB" "PB")
+    local unit=0
+    local size="$bytes"
+    
+    while (( $(echo "$size >= 1024" | bc -l 2>/dev/null || echo 0) )); do
+        size=$(echo "scale=2; $size / 1024" | bc)
+        ((unit++))
+    done
+    
+    printf "%.2f %s" "$size" "${units[$unit]}"
+}
+
+# Print header
+header() {
+    local message="$*"
+    local line_length=70
+    local line
+    line=$(printf '=%.0s' $(seq 1 $line_length))
+    
+    if [[ -n "$COLOR_HEADER" ]]; then
+        echo ""
+        echo -e "${COLOR_HEADER}${line}${NC}"
+        echo -e "${COLOR_HEADER}${BOLD}  ${message}${NC}"
+        echo -e "${COLOR_HEADER}${line}${NC}"
+        echo ""
+    else
+        echo ""
+        echo "$line"
+        echo "  $message"
+        echo "$line"
+        echo ""
+    fi
+    
+    # Log to file
+    if [[ "$LOG_FILE_WRITABLE" == "true" ]]; then
+        {
+            echo ""
+            echo "$line"
+            echo "  $message"
+            echo "$line"
+            echo ""
+        } >> "$LOG_FILE" 2>/dev/null
+    fi
+}
+
+# Print indented text
+indent() {
+    local level="${1:-1}"
+    shift
+    local message="$*"
+    local spaces
+    spaces=$(printf ' %.0s' $(seq 1 $((level * 2))))
+    echo -e "${spaces}${message}"
+    
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "${spaces}${message}" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Progress bar
+progress_bar() {
+    local current="$1"
+    local total="$2"
+    local width="${3:-50}"
+    local message="${4:-}"
+    
+    local percentage=$((current * 100 / total))
+    local filled=$((width * current / total))
+    local empty=$((width - filled))
+    
+    printf "\r%s [" "$message"
+    printf "%${filled}s" | tr ' ' '='
+    printf "%${empty}s" | tr ' ' ' '
+    printf "] %d%%" "$percentage"
+    
+    if [[ $current -eq $total ]]; then
+        echo ""
+    fi
+}
+
+# Print separator line
+separator() {
+    local char="${1:--}"
+    local length="${2:-70}"
+    local line
+    line=$(printf "${char}%.0s" $(seq 1 "$length"))
+    echo "$line"
+    
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "$line" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Show a spinner while command runs
+spinner() {
+    local pid=$1
+    local message="${2:-Processing...}"
+    local spin='-\|/'
+    local i=0
+    
+    # Hide cursor
+    tput civis 2>/dev/null || true
+    
+    echo -n "$message "
+    while kill -0 "$pid" 2>/dev/null; do
+        i=$(( (i+1) % 4 ))
+        printf "\r%s [%c]" "$message" "${spin:$i:1}"
+        sleep 0.1
+    done
+    
+    # Get exit status
+    wait "$pid"
+    local exit_status=$?
+    
+    # Show cursor
+    tput cnorm 2>/dev/null || true
+    
+    if [[ $exit_status -eq 0 ]]; then
+        if [[ -n "$GREEN" ]]; then
+            printf "\r%s [${GREEN}${SYMBOL_SUCCESS}${NC}]\n" "$message"
         else
-            info "Installation snapshot not found: $INSTALL_SNAPSHOT_NAME"
+            printf "\r%s [${SYMBOL_SUCCESS}]\n" "$message"
         fi
     else
-        info "No installation snapshot information available"
-    fi
-    
-    # List recent snapshots
-    info "Recent snapshots (last 10):"
-    local recent_snapshots
-    recent_snapshots=$(zfs list -t snapshot -o name,creation -s creation 2>/dev/null | tail -10 || true)
-    
-    if [ -n "$recent_snapshots" ]; then
-        echo "$recent_snapshots" | tee -a "$LOG_FILE"
-        
-        # Count snapshots per dataset
-        local snapshot_count
-        snapshot_count=$(zfs list -t snapshot -H 2>/dev/null | wc -l || echo "0")
-        success "Total snapshots available: $snapshot_count"
-    else
-        info "No snapshots found"
-        warning "Consider creating snapshots for system recovery"
-    fi
-    
-    # Check for automatic snapshot service
-    if [ -L /etc/runit/runsvdir/default/zfs-auto-snapshot ]; then
-        success "Automatic snapshot service enabled"
-    else
-        info "Automatic snapshot service not enabled (optional)"
-    fi
-}
-
-show_system_summary() {
-    header "SYSTEM SUMMARY"
-    
-    log "Kernel Information:"
-    log "  Running: $RUNNING_KERNEL"
-    if [ -n "$LATEST_KERNEL" ]; then
-        log "  Latest:  $LATEST_KERNEL"
-    fi
-    
-    log ""
-    log "ZFS Information:"
-    if [ -n "$ZFS_MODULE_VERSION" ]; then
-        log "  Module:   $ZFS_MODULE_VERSION"
-    fi
-    if [ -n "$ZFS_USERLAND_VERSION" ]; then
-        log "  Userland: $ZFS_USERLAND_VERSION"
-    fi
-    
-    if [ "$POOLS_EXIST" = true ]; then
-        log ""
-        log "ZFS Pools:"
-        zpool list 2>/dev/null | tee -a "$LOG_FILE" || true
-        
-        log ""
-        log "ZFS Datasets (mounted):"
-        zfs list -o name,used,avail,refer,mountpoint 2>/dev/null | tee -a "$LOG_FILE" || true
-    fi
-    
-    if [ "$ZFSBOOTMENU" = true ]; then
-        log ""
-        log "Boot Method: ZFSBootMenu"
-        log "ESP Mount: ${ESP_MOUNT:-/boot/efi}"
-    fi
-}
-
-show_recommendations() {
-    header "RECOMMENDATIONS & NEXT STEPS"
-    
-    if [ $CRITICAL_FAILURES -gt 0 ]; then
-        error "CRITICAL ISSUES DETECTED - SYSTEM MAY NOT BOOT PROPERLY"
-        log ""
-        log "Critical issues must be resolved before rebooting:"
-        log "  1. Review the errors marked with ✗✗ above"
-        log "  2. Follow the suggested fixes"
-        log "  3. Re-run this verification script"
-        log ""
-    fi
-    
-    if [ "$KERNEL_MISMATCH" = true ]; then
-        warning "Kernel Update Detected"
-        log "  A newer kernel is installed but not running"
-        log "  Recommendation: Reboot to activate the new kernel"
-        log ""
-    fi
-    
-    if [ $CHECKS_WARNED -gt 0 ]; then
-        info "Warnings Detected"
-        log "  Review warnings marked with ⚠ above"
-        log "  These are not critical but should be addressed"
-        log ""
-    fi
-    
-    if [ $CHECKS_FAILED -eq 0 ] && [ $CRITICAL_FAILURES -eq 0 ]; then
-        success "ALL CHECKS PASSED"
-        log ""
-        log "System appears to be properly configured and ready to boot"
-        log ""
-        
-        if [ "$KERNEL_MISMATCH" = true ]; then
-            log "Safe to reboot to activate new kernel"
+        if [[ -n "$RED" ]]; then
+            printf "\r%s [${RED}${SYMBOL_ERROR}${NC}]\n" "$message"
+        else
+            printf "\r%s [${SYMBOL_ERROR}]\n" "$message"
         fi
     fi
     
-    log "Maintenance Recommendations:"
-    log "  - Create regular snapshots: zfs snapshot <pool>/<dataset>@\$(date +%Y%m%d)"
-    log "  - Monitor pool health: zpool status -v"
-    log "  - Check for pool errors: zpool events -v"
-    log "  - Update ZFS properties as needed"
-    log ""
-    log "Full verification log saved to: $LOG_FILE"
+    return $exit_status
 }
 
-main() {
-    check_root
+# Print status
+print_status() {
+    local status="$1"
+    local message="$2"
     
-    log "${BOLD}ZFS Post-Update Verification Script${NC}"
-    log "Started: $(date)"
-    log ""
+    local status_symbol
+    local status_color="$NC"
     
-    # Load configuration if available
-    load_config
+    case "$status" in
+        "ok"|"success"|"pass")
+            status_symbol="$SYMBOL_SUCCESS"
+            status_color="$GREEN"
+            ;;
+        "fail"|"error")
+            status_symbol="$SYMBOL_ERROR"
+            status_color="$RED"
+            ;;
+        "warn"|"warning")
+            status_symbol="$SYMBOL_WARNING"
+            status_color="$YELLOW"
+            ;;
+        "info")
+            status_symbol="$SYMBOL_INFO"
+            status_color="$BLUE"
+            ;;
+        "skip")
+            status_symbol="-"
+            status_color="$DIM"
+            ;;
+        *)
+            status_symbol=" "
+            status_color="$NC"
+            ;;
+    esac
     
-    # Detect system configuration
-    detect_system_config
-    
-    # Run all verification checks
-    verify_kernel_version
-    verify_zfs_module
-    verify_zfs_userland
-    verify_hostid
-    verify_encryption_keys
-    verify_zfs_services
-    verify_dracut_configuration
-    verify_pool_configuration
-    verify_pool_status
-    verify_dataset_structure
-    verify_pool_import
-    verify_datasets_mounted
-    verify_initramfs
-    verify_zfsbootmenu
-    verify_fstab
-    test_basic_zfs_operations
-    check_rollback_capability
-    
-    # Show summary and recommendations
-    show_system_summary
-    show_recommendations
-    
-    # Final status
-    header "VERIFICATION COMPLETE"
-    log "Results:"
-    log "  ${GREEN}✓ Passed: $CHECKS_PASSED${NC}"
-    if [ $CHECKS_WARNED -gt 0 ]; then
-        log "  ${YELLOW}⚠ Warnings: $CHECKS_WARNED${NC}"
-    fi
-    if [ $CHECKS_FAILED -gt 0 ]; then
-        log "  ${RED}✗ Failed: $CHECKS_FAILED${NC}"
-    fi
-    if [ $CRITICAL_FAILURES -gt 0 ]; then
-        log "  ${RED}✗✗ Critical: $CRITICAL_FAILURES${NC}"
+    if [[ -n "$status_color" ]]; then
+        echo -e "[${status_color}${status_symbol}${NC}] ${message}"
+    else
+        echo "[$status_symbol] $message"
     fi
     
-    log ""
-    log "Completed: $(date)"
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "[$status] $message" >> "$LOG_FILE" 2>/dev/null
+}
+
+# Print subheader
+subheader() {
+    local message="$*"
+    if [[ -n "$CYAN" ]]; then
+        echo -e "${CYAN}${BOLD}${message}${NC}"
+    else
+        echo "$message"
+    fi
     
-    # Exit with appropriate code
-    if [ $CRITICAL_FAILURES -gt 0 ]; then
-        exit 2
-    elif [ $CHECKS_FAILED -gt 0 ]; then
+    [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "$message" >> "$LOG_FILE" 2>/dev/null
+}
+
+# ============================================
+# INTERACTIVE FUNCTIONS
+# ============================================
+
+# Ask for input with validation
+ask_input() {
+    local prompt="$1"
+    local default="${2:-}"
+    local validator="${3:-}"
+    local reply
+    
+    while true; do
+        if [[ -n "$default" ]]; then
+            read -r -p "$prompt [$default]: " reply
+            reply="${reply:-$default}"
+        else
+            read -r -p "$prompt: " reply
+        fi
+        
+        # If no validator, accept any non-empty input
+        if [[ -z "$validator" ]]; then
+            if [[ -n "$reply" ]]; then
+                echo "$reply"
+                return 0
+            fi
+        else
+            # Run validator function
+            if $validator "$reply"; then
+                echo "$reply"
+                return 0
+            fi
+        fi
+        
+        error "Invalid input, please try again"
+    done
+}
+
+# Ask yes/no question
+ask_yes_no() {
+    local prompt="$1"
+    local default="${2:-n}"
+    local reply
+    
+    if [[ "$default" == "y" ]]; then
+        prompt="$prompt [Y/n]: "
+    else
+        prompt="$prompt [y/N]: "
+    fi
+    
+    while true; do
+        read -r -p "$prompt" reply
+        reply="${reply:-$default}"
+        
+        case "$reply" in
+            [Yy]*)
+                return 0
+                ;;
+            [Nn]*)
+                return 1
+                ;;
+            *)
+                echo "Please answer yes or no."
+                ;;
+        esac
+    done
+}
+
+# Confirm action
+confirm_action() {
+    local message="$1"
+    local default="${2:-n}"
+    
+    warning "$message"
+    echo ""
+    ask_yes_no "Are you sure you want to continue?" "$default"
+}
+
+# ============================================
+# LOGGING FUNCTIONS
+# ============================================
+
+# Debug log
+debug() {
+    _log "DEBUG" "$COLOR_DEBUG" "$SYMBOL_DEBUG" "$*" "$LOG_LEVEL_DEBUG"
+}
+
+# Error log
+error() {
+    _log "ERROR" "$COLOR_ERROR" "$SYMBOL_ERROR" "$*" "$LOG_LEVEL_ERROR" >&2
+}
+
+# Info log
+info() {
+    _log "INFO" "$COLOR_INFO" "$SYMBOL_INFO" "$*" "$LOG_LEVEL_INFO"
+}
+
+# Success log
+success() {
+    _log "SUCCESS" "$COLOR_SUCCESS" "$SYMBOL_SUCCESS" "$*" "$LOG_LEVEL_INFO"
+}
+
+# Warning log
+warning() {
+    _log "WARNING" "$COLOR_WARNING" "$SYMBOL_WARNING" "$*" "$LOG_LEVEL_WARNING"
+}
+
+# ============================================
+# SYSTEM INFORMATION
+# ============================================
+
+# Get system architecture
+get_architecture() {
+    uname -m
+}
+
+# Get available memory in MB
+get_available_memory() {
+    local mem_kb
+    mem_kb=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+    echo $((mem_kb / 1024))
+}
+
+# Get disk space in MB
+get_disk_space() {
+    local path="${1:-.}"
+    df -m "$path" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0"
+}
+
+# Get distribution name
+get_distro() {
+    if [[ -f /etc/os-release ]]; then
+        grep "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"'
+    else
+        echo "unknown"
+    fi
+}
+
+# Get kernel version
+get_kernel_version() {
+    uname -r
+}
+
+# Check if system is UEFI
+is_uefi() {
+    [[ -d /sys/firmware/efi ]]
+}
+
+# ============================================
+# UTILITY FUNCTIONS
+# ============================================
+
+# Check if command exists
+command_exists() {
+    command -v "$1" &>/dev/null
+}
+
+# Die with error message
+die() {
+    error "$*"
+    
+    # Log to file with stack trace if in debug mode
+    if [[ "$LOG_FILE_WRITABLE" == "true" ]] && [[ "${CURRENT_LOG_LEVEL}" -eq "$LOG_LEVEL_DEBUG" ]]; then
+        {
+            echo "FATAL ERROR: $*"
+            echo "Stack trace:"
+            local frame=0
+            while caller $frame 2>/dev/null; do
+                ((frame++))
+            done
+        } >> "$LOG_FILE" 2>/dev/null
+    fi
+    
+    exit 1
+}
+
+# Check if value is in array
+in_array() {
+    local needle="$1"
+    shift
+    local haystack=("$@")
+    
+    for item in "${haystack[@]}"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Check if running in chroot
+in_chroot() {
+    if [[ "$(stat -c %d:%i /)" != "$(stat -c %d:%i /proc/1/root/.)" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Check if running as root
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "This script must be run as root"
+        error "Please run: sudo $0"
         exit 1
-    else
-        exit 0
     fi
 }
 
-# Run main function
-main "$@"
+# Retry command with exponential backoff
+retry_command() {
+    local max_attempts="${1:-3}"
+    local delay="${2:-1}"
+    shift 2
+    local cmd=("$@")
+    
+    local attempt=1
+    local exit_code=0
+    
+    while [[ $attempt -le $max_attempts ]]; do
+        debug "Attempt $attempt/$max_attempts: ${cmd[*]}"
+        
+        if "${cmd[@]}"; then
+            return 0
+        fi
+        exit_code=$?
+        
+        if [[ $attempt -lt $max_attempts ]]; then
+            warning "Command failed, retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+        fi
+        
+        ((attempt++))
+    done
+    
+    error "Command failed after $max_attempts attempts: ${cmd[*]}"
+    return $exit_code
+}
+
+# Safe command execution with logging
+safe_run() {
+    local cmd=("$@")
+    
+    debug "Executing: ${cmd[*]}"
+    
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        info "DRY RUN: Would execute: ${cmd[*]}"
+        return 0
+    fi
+    
+    if "${cmd[@]}" 2>&1 | head -1000; then
+        debug "Command succeeded: ${cmd[*]}"
+        return 0
+    else
+        local exit_code=$?
+        error "Command failed (exit code: $exit_code): ${cmd[*]}"
+        return $exit_code
+    fi
+}
+
+# Sleep with countdown
+sleep_countdown() {
+    local seconds="$1"
+    local message="${2:-Waiting}"
+    
+    for ((i=seconds; i>0; i--)); do
+        echo -ne "\r$message: ${i}s  "
+        sleep 1
+    done
+    echo -e "\r$message: Done!  "
+}
+
+# Get timestamp
+timestamp() {
+    date '+%Y%m%d-%H%M%S'
+}
+
+# Get ISO timestamp
+timestamp_iso() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
+# Trim whitespace
+trim() {
+    local var="$*"
+    # Remove leading whitespace
+    var="${var#"${var%%[![:space:]]*}"}"
+    # Remove trailing whitespace
+    var="${var%"${var##*[![:space:]]}"}"
+    echo "$var"
+}
+
+# ============================================
+# VALIDATION FUNCTIONS
+# ============================================
+
+# Validate device exists
+validate_device() {
+    local device="$1"
+    local description="${2:-Device}"
+    
+    if [[ ! -b "$device" ]]; then
+        error "$description not found or not a block device: $device"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate directory exists
+validate_directory() {
+    local dir="$1"
+    local description="${2:-Directory}"
+    
+    if [[ ! -d "$dir" ]]; then
+        error "$description not found: $dir"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate file exists
+validate_file() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    if [[ ! -f "$file" ]]; then
+        error "$description not found: $file"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate file is readable
+validate_readable() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    if [[ ! -r "$file" ]]; then
+        error "$description is not readable: $file"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Validate file is writable
+validate_writable() {
+    local file="$1"
+    local description="${2:-File}"
+    
+    # Check if file exists and is writable, or directory is writable
+    if [[ -f "$file" ]]; then
+        if [[ ! -w "$file" ]]; then
+            error "$description is not writable: $file"
+            return 1
+        fi
+    else
+        local dir
+        dir=$(dirname "$file")
+        if [[ ! -w "$dir" ]]; then
+            error "Cannot write to directory: $dir"
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
+# ============================================
+# SIGNAL TRAPS
+# ============================================
+
+# Trap EXIT to run cleanup
+trap run_cleanup EXIT
+
+# Trap INT signal (Ctrl+C)
+trap 'echo ""; warning "Interrupted by user"; exit 130' INT
+
+# Trap TERM signal
+trap 'echo ""; warning "Terminated"; exit 143' TERM
+
+# ============================================
+# FUNCTION EXPORTS
+# ============================================
+
+# Export functions (for use in subshells)
+export -f ask_input ask_yes_no
+export -f backup_file bullet
+export -f command_exists confirm_action
+export -f debug die
+export -f ensure_directory error
+export -f format_bytes
+export -f get_architecture get_available_memory get_disk_space get_distro get_kernel_version
+export -f header
+export -f in_array in_chroot indent info is_uefi
+export -f progress_bar print_status
+export -f register_cleanup require_root retry_command run_cleanup
+export -f safe_run separator sleep_countdown spinner subheader success
+export -f timestamp timestamp_iso trim
+export -f validate_device validate_directory validate_file validate_readable validate_writable
+export -f warning
+
+# ============================================
+# LIBRARY INITIALIZATION COMPLETE
+# ============================================
+
+# Initialize log file
+_init_log_file
+
+# Log that library was loaded
+debug "common.sh library v${COMMON_VERSION} loaded successfully"
+
+# Return success
+return 0
