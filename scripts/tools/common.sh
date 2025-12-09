@@ -621,7 +621,7 @@ trim() {
 }
 
 # Get human-readable size
-human_size() {
+format_bytes() {
     local bytes="$1"
     local units=("B" "KB" "MB" "GB" "TB" "PB")
     local unit=0
