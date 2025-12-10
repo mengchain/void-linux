@@ -1,1193 +1,1223 @@
 #!/usr/bin/env bash
-# filepath: voidZFSInstallRepo.sh
+# filepath: zfs-void-install.sh
 # Void Linux ZFS Installation Script
-# Version: 4.3 - Helper functions moved to script
-# Description: Automated ZFS-on-root installation for Void Linux
+# Version: 3.0 - Refactored with main() and phase functions
 
 export TERM=xterm
+set -e
 
-# ============================================
-# Load Common Library
-# ============================================
+# Source common library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="${LIB_DIR:-/usr/local/lib/zfs-scripts}"
-
-# Try to source common.sh from standard location
-if [[ -f "$LIB_DIR/common.sh" ]]; then
-    source "$LIB_DIR/common.sh"
-# Fallback: try relative to script location (for development)
-elif [[ -f "$SCRIPT_DIR/../lib/common.sh" ]]; then
-    source "$SCRIPT_DIR/../lib/common.sh"
-# Fallback: try same directory as script
-elif [[ -f "$SCRIPT_DIR/common.sh" ]]; then
-    source "$SCRIPT_DIR/common.sh"
+if [[ -f "${SCRIPT_DIR}/common.sh" ]]; then
+    source "${SCRIPT_DIR}/common.sh"
+elif [[ -f "/usr/local/lib/zfs-scripts/common.sh" ]]; then
+    source "/usr/local/lib/zfs-scripts/common.sh"
 else
-    echo "ERROR: Cannot find common.sh library"
+    echo "ERROR: common.sh library not found!" >&2
     exit 1
 fi
 
-# ============================================
-# Load ZFS Setup Configuration
-# ============================================
-# Set installation mode flag (prevents validation of non-existent paths)
-export ZFS_INSTALL_MODE=1
+# Configure logging for this script
+LOG_FILE="/var/log/zfs-void-install.log"
+USE_LOG_FILE=true
 
-# Try to source zfs-setup.conf from standard location
-if [[ -f "/etc/zfs-setup.conf" ]]; then
-    source /etc/zfs-setup.conf
-# Fallback: try relative to script location (for development)
-elif [[ -f "$SCRIPT_DIR/../conf/zfs-setup.conf" ]]; then
-    source "$SCRIPT_DIR/../conf/zfs-setup.conf"
-# Fallback: try same directory as script
-elif [[ -f "$SCRIPT_DIR/zfs-setup.conf" ]]; then
-    source "$SCRIPT_DIR/zfs-setup.conf"
-else
-    die "Cannot find zfs-setup.conf configuration file"
-fi
-set -euo pipefail
+exec &> >(tee "configureNinstall.log")
 
 # ============================================
-# Script Configuration
+# GLOBAL VARIABLES FOR USER INPUTS
 # ============================================
-LOG_FILE="configureNinstall.log"
-FONT="drdos8x14"
 
-# Script metadata
-SCRIPT_NAME="Void Linux ZFS Installation"
-SCRIPT_VERSION="4.3"
-
-# Redirect all output to both console and log file
-exec &> >(tee "$LOG_FILE")
-
-# ============================================
-# Global Variables for User Input
-# ============================================
 INSTALL_TYPE=""           # "first" or "dualboot"
-SELECTED_DISK=""          # /dev/disk/by-id/xxx
-SELECTED_DISK_NAME=""     # Just the name for display
-WIPE_DISK=false           # true/false
-ZFS_PASSPHRASE=""         # Encryption passphrase
-ROOT_DATASET_NAME=""      # Name for root dataset
-HOSTNAME=""               # System hostname
-TIMEZONE=""               # System timezone
-USERNAME=""               # Primary user
-ROOT_PASSWORD=""          # Root password
-USER_PASSWORD=""          # User password
-CREATE_SWAP=false         # true/false
-SWAP_SIZE=""              # e.g., "8G"
+DISK=""                   # Selected disk path
+DISK_TO_WIPE=""          # Boolean: wipe disk or not
+ZFS_PASSPHRASE=""        # Encryption passphrase
+ROOT_DATASET_NAME=""     # Name of root dataset
+CREATE_SWAP=false        # Boolean: create swap or not
+SWAP_SIZE=""            # Swap size (e.g., "4G")
+SYSTEM_HOSTNAME=""      # System hostname
+SYSTEM_TIMEZONE=""      # System timezone
+SYSTEM_USERNAME=""      # Regular user account name
+ROOT_PASSWORD=""        # Root password
+USER_PASSWORD=""        # User password
 
-# Track EFI partition UUID
-EFI_UUID=""
+# Repository configuration
+REPO="https://repo-default.voidlinux.org/current"
+ARCH="x86_64"
 
-# ============================================
-# Configuration Writer Helper Functions
-# ============================================
+# Partition variables (set during partitioning)
+EFI=""
+ZFS_PARTITION=""
 
-# Write dracut ZFS configuration
-write_dracut_zfs_config() {
-    local target_file="${1:-$DRACUT_ZFS_CONF}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$DRACUT_ZFS_CONFIG_CONTENT" > "$target_file"
-    
-    return 0
-}
-
-# Write dracut main configuration
-write_dracut_main_config() {
-    local target_file="${1:-$DRACUT_MAIN_CONF}"
-    
-    echo "$DRACUT_MAIN_CONFIG_CONTENT" > "$target_file"
-    
-    return 0
-}
-
-# Write ZFSBootMenu configuration
-write_zbm_config() {
-    local target_file="${1:-$ZBM_CONFIG}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$ZBM_CONFIG_CONTENT" > "$target_file"
-    
-    return 0
-}
-
-# Write ZFSBootMenu keymap configuration
-write_zbm_keymap_config() {
-    local target_file="${1:-$ZBM_KEYMAP_CONF}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$ZBM_KEYMAP_CONFIG_CONTENT" > "$target_file"
-    
-    return 0
-}
-
-# Write kernel command line keymap configuration
-write_cmdline_keymap() {
-    local target_file="${1:-$CMDLINE_KEYMAP}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$CMDLINE_KEYMAP_CONTENT" > "$target_file"
-    
-    return 0
-}
-
-# Write IWD configuration
-write_iwd_config() {
-    local target_file="${1:-/etc/iwd/main.conf}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$IWD_MAIN_CONFIG" > "$target_file"
-    
-    return 0
-}
-
-# Write resolvconf configuration
-write_resolvconf_config() {
-    local target_file="${1:-/etc/resolvconf.conf}"
-    
-    echo "$RESOLVCONF_CONFIG" >> "$target_file"
-    
-    return 0
-}
-
-# Write sysctl configuration
-write_sysctl_config() {
-    local target_file="${1:-/etc/sysctl.conf}"
-    
-    echo "$SYSCTL_CONFIG" > "$target_file"
-    
-    return 0
-}
-
-# Write useradd defaults
-write_useradd_defaults() {
-    local target_file="${1:-/etc/default/useradd}"
-    
-    echo "$USERADD_DEFAULTS" > "$target_file"
-    
-    return 0
-}
-
-# Write sudoers wheel configuration
-write_sudoers_wheel() {
-    local target_file="${1:-/etc/sudoers.d/99-wheel}"
-    local target_dir
-    target_dir="$(dirname "$target_file")"
-    
-    mkdir -p "$target_dir"
-    echo "$SUDOERS_WHEEL" > "$target_file"
-    chmod 0440 "$target_file"
-    
-    return 0
-}
-
-# Write fstab configuration
-# Parameters:
-#   $1 - target file path
-#   $2 - EFI UUID
-#   $3 - ESP mount point
-#   $4 - pool name (for swap)
-#   $5 - include swap (true/false)
-write_fstab() {
-    local target_file="${1:-/etc/fstab}"
-    local efi_uuid="${2:-}"
-    local esp_mount="${3:-$ESP_MOUNT}"
-    local pool_name="${4:-$DEFAULT_POOL_NAME}"
-    local include_swap="${5:-false}"
-    
-    # Validate required parameters
-    if [[ -z "$efi_uuid" ]]; then
-        error "EFI UUID is required for fstab"
-        return 1
-    fi
-    
-    # Replace variables in template
-    local fstab_content="$FSTAB_TEMPLATE"
-    fstab_content="${fstab_content//__EFI_UUID__/$efi_uuid}"
-    fstab_content="${fstab_content//__ESP_MOUNT__/$esp_mount}"
-    
-    # Write base fstab
-    echo "$fstab_content" > "$target_file"
-    
-    # Add swap entry if requested
-    if [[ "$include_swap" == "true" ]]; then
-        local swap_entry="$FSTAB_SWAP_TEMPLATE"
-        swap_entry="${swap_entry//__POOL_NAME__/$pool_name}"
-        echo "$swap_entry" >> "$target_file"
-    fi
-    
-    success "fstab written to $target_file"
-    return 0
-}
-
-# Write user configuration script
-# Parameters:
-#   $1 - target file path
-#   $2 - root password
-#   $3 - username
-#   $4 - user password
-write_user_config_script() {
-    local target_file="${1:-/tmp/configure_users.sh}"
-    local root_password="${2:-}"
-    local username="${3:-}"
-    local user_password="${4:-}"
-    
-    # Validate required parameters
-    if [[ -z "$root_password" ]] || [[ -z "$username" ]] || [[ -z "$user_password" ]]; then
-        error "All passwords and username are required"
-        return 1
-    fi
-    
-    # Replace variables in template
-    local script_content="$CONFIGURE_USERS_SCRIPT_TEMPLATE"
-    script_content="${script_content//__ROOT_PASSWORD__/$root_password}"
-    script_content="${script_content//__USERNAME__/$username}"
-    script_content="${script_content//__USER_PASSWORD__/$user_password}"
-    
-    # Write script
-    echo "$script_content" > "$target_file"
-    chmod +x "$target_file"
-    
-    success "User configuration script written to $target_file"
-    return 0
-}
+# Debug mode flag
+DEBUG_MODE=false
 
 # ============================================
-# Additional UI Functions (beyond common.sh)
+# VALIDATION FUNCTIONS
 # ============================================
-print() {
-    echo -e "$@"
-}
 
-menu() {
-    local title="$1"
-    shift
-    local options=("$@")
-    
-    header "$title"
-    
-    local i=1
-    for option in "${options[@]}"; do
-        print "  ${CYAN}$i)${NC} $option"
-        ((i++))
-    done
-    
-    echo
-    local choice
-    while true; do
-        echo -e -n "${BLUE}?${NC} Select option [1-${#options[@]}]: "
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})); then
-            echo "$choice"
-            return 0
-        fi
-        error "Invalid selection. Please enter a number between 1 and ${#options[@]}"
-    done
-}
-
-# ============================================
-# Validation Functions for ask_input
-# ============================================
-validate_dataset_name() {
-    local name="$1"
-    [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]]
-}
-
-validate_swap_size() {
-    local size="$1"
-    [[ "$size" =~ ^[0-9]+[GMgm]$ ]]
-}
-
-validate_hostname() {
-    local hostname="$1"
-    [[ "$hostname" =~ ^[a-zA-Z0-9-]+$ ]]
-}
-
-validate_username() {
-    local username="$1"
-    [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]
-}
-
-validate_password_length() {
-    local password="$1"
-    [[ ${#password} -ge 6 ]]
-}
-
-validate_passphrase_length() {
-    local passphrase="$1"
-    [[ ${#passphrase} -ge 8 ]]
-}
-
-validate_timezone() {
-    local tz="$1"
-    [[ -f "/usr/share/zoneinfo/$tz" ]]
-}
-
-# ============================================
-# Prerequisites Check
-# ============================================
 check_prerequisites() {
+    local failed=0
+    
     header "Checking Prerequisites"
     
-    # Check if running as root
-    require_root
-    
-    # Check for required commands
-    local required_commands=(
-        "zfs"
-        "zpool"
-        "sgdisk"
-        "parted"
-        "mkfs.vfat"
-        "xbps-install"
-    )
-    
-    local missing_commands=()
-    for cmd in "${required_commands[@]}"; do
-        if ! command_exists "$cmd"; then
-            missing_commands+=("$cmd")
-        fi
-    done
-    
-    if [[ ${#missing_commands[@]} -gt 0 ]]; then
-        error "Missing required commands: ${missing_commands[*]}"
-        die "Please install required packages and try again"
+    # Check for root privileges
+    if [[ $EUID -ne 0 ]]; then
+        error "This script must be run as root"
+        failed=1
+    else
+        success "Running as root"
     fi
     
-    # Check if ZFS modules are loaded
-    if ! lsmod | grep -q "^zfs"; then
-        warning "ZFS module not loaded, attempting to load..."
-        if ! modprobe zfs; then
-            die "Failed to load ZFS module"
-        fi
+    # Check for EFI boot mode
+    if ! ls /sys/firmware/efi/efivars &>/dev/null; then
+        error "System not booted in EFI mode"
+        failed=1
+    else
+        success "System is in EFI mode"
+    fi
+    
+    # Check network connectivity
+    if ! ping -c 1 voidlinux.org &>/dev/null; then
+        error "No network connectivity to voidlinux.org"
+        failed=1
+    else
+        success "Network connectivity verified"
+    fi
+    
+    # Check for ZFS module
+    if ! modprobe zfs &>/dev/null; then
+        error "ZFS kernel module not available"
+        failed=1
+    else
+        success "ZFS module loaded"
+    fi
+    
+    if ((failed)); then
+        die "Prerequisites check failed"
     fi
     
     success "All prerequisites satisfied"
 }
 
 # ============================================
-# USER INPUT COLLECTION - ALL AT ONCE
+# USER INPUT COLLECTION PHASE
 # ============================================
-collect_installation_type() {
-    header "Installation Type"
+
+collect_user_inputs() {
+    header "VOID LINUX ZFS INSTALLATION - User Input Collection Phase"
     
-    print "Select installation type:"
-    print "  ${CYAN}1)${NC} First-time installation (will use entire disk)"
-    print "  ${CYAN}2)${NC} Dual-boot installation (preserve existing partitions)"
-    echo
+    # Step 1: Installation Type
+    subheader "Step 1: Installation Type"
+    echo ""
+    echo "Is this the first install or a second install to dualboot?"
+    # Use printf to render colors for PS3 prompt
+    PS3=$'\033[1;94m→\033[0m Choose a number: '
+    select i in "first" "dualboot"; do
+        INSTALL_TYPE="$i"
+        break
+    done
+    info "Selected installation type: $INSTALL_TYPE"
     
-    local choice
-    choice=$(menu "Installation Type" \
-        "First-time installation (use entire disk)" \
-        "Dual-boot installation (preserve existing)")
+    # Step 2: Disk Selection
+    subheader "Step 2: Disk Selection"
+    collect_disk_selection
     
-    case $choice in
-        1) INSTALL_TYPE="first" ;;
-        2) INSTALL_TYPE="dualboot" ;;
-        *) die "Invalid selection" ;;
-    esac
+    # Step 3: Wipe Decision (if first install)
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        subheader "Step 3: Disk Wipe Confirmation"
+        collect_wipe_decision
+    fi
     
-    success "Installation type: $INSTALL_TYPE"
+    # Step 4: ZFS Encryption Passphrase
+    subheader "Step 4: ZFS Encryption Passphrase"
+    collect_zfs_passphrase
+    
+    # Step 5: Root Dataset Name
+    subheader "Step 5: Root Dataset Name"
+    collect_dataset_name
+    
+    # Step 6: Swap Configuration (if first install)
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        subheader "Step 6: Swap Configuration"
+        collect_swap_config
+    fi
+    
+    # Step 7: System Information
+    subheader "Step 7: System Configuration"
+    collect_system_info
+    
+    success "User input collection complete"
 }
 
 collect_disk_selection() {
-    header "Disk Selection"
-    
-    info "Available disks:"
-    
-    # Get list of disks by ID
     local disks=()
-    local disk_info=()
-    
     while IFS= read -r disk; do
-        local disk_path="/dev/disk/by-id/$disk"
-        local size
-        size=$(lsblk -ndo SIZE "$disk_path" 2>/dev/null || echo "Unknown")
-        local model
-        model=$(lsblk -ndo MODEL "$disk_path" 2>/dev/null || echo "Unknown")
-        
-        disks+=("$disk")
-        disk_info+=("$disk ($size, $model)")
-    done < <(ls /dev/disk/by-id/ | grep -v "part" | sort)
+        # Filter out partition entries
+        if [[ ! $disk =~ -(part|p)[0-9]+$ ]]; then
+            disks+=("$disk")
+        fi
+    done < <(ls /dev/disk/by-id/)
     
     if [[ ${#disks[@]} -eq 0 ]]; then
-        die "No disks found"
+        die "No disks found!"
     fi
     
-    # Display disks with numbers
-    local i=1
-    for info in "${disk_info[@]}"; do
-        print "  ${CYAN}$i)${NC} $info"
-        ((i++))
-    done
-    
-    echo
-    local choice
-    while true; do
-        echo -e -n "${BLUE}?${NC} Select disk [1-${#disks[@]}]: "
-		read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#disks[@]})); then
+    # Use ANSI-C quoting for PS3
+    PS3=$'\033[1;94m→\033[0m Select installation disk: '
+    select ENTRY in "${disks[@]}"; do
+        if [[ -n $ENTRY ]]; then
+            DISK="/dev/disk/by-id/$ENTRY"
+            info "Selected disk: $ENTRY"
+            info "Full path: $DISK"
+            
+            # Display disk information
+            if command -v lsblk &>/dev/null; then
+                echo ""
+                lsblk "$DISK" 2>/dev/null || true
+                echo ""
+            fi
             break
         fi
-        error "Invalid selection. Please enter a number between 1 and ${#disks[@]}"
     done
-    
-    SELECTED_DISK_NAME="${disks[$((choice-1))]}"
-    SELECTED_DISK="/dev/disk/by-id/$SELECTED_DISK_NAME"
-    
-    success "Selected disk: $SELECTED_DISK_NAME"
 }
 
-collect_disk_wipe_confirmation() {
-    if [[ "$INSTALL_TYPE" == "first" ]]; then
-        header "Disk Wipe Confirmation"
-        
-        warning "This will ERASE ALL DATA on $SELECTED_DISK_NAME"
-        print "  Disk: ${RED}$SELECTED_DISK${NC}"
-        print "  Size: $(lsblk -ndo SIZE "$SELECTED_DISK")"
-        print "  Model: $(lsblk -ndo MODEL "$SELECTED_DISK")"
-        echo
-        
-        if confirm_action "Wipe disk and continue?"; then
-            WIPE_DISK=true
-            success "Disk wipe confirmed"
-        else
-            die "Installation cancelled by user"
-        fi
+collect_wipe_decision() {
+    echo ""
+    if ask_yes_no "Do you want to wipe all data on $(basename $DISK)?" "n"; then
+        DISK_TO_WIPE=true
+        warning "Disk will be wiped during installation"
+    else
+        DISK_TO_WIPE=false
+        info "Disk will NOT be wiped. Ensure disk is properly prepared."
     fi
 }
 
 collect_zfs_passphrase() {
-    header "ZFS Encryption"
-    
-    info "ZFS native encryption will be used"
-    info "Encryption algorithm: $ENCRYPTION_ALGORITHM"
-    echo
-    
     while true; do
-        echo -e -n "${BLUE}?${NC} Enter encryption passphrase (min 8 chars): "
-		read -rs ZFS_PASSPHRASE
+        # Use echo -e for colored prompt
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter ZFS encryption passphrase: "
+        read -r -s pass1
+        echo
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Confirm passphrase: "
+        read -r -s pass2
         echo
         
-        if ! validate_passphrase_length "$ZFS_PASSPHRASE"; then
-            error "Passphrase must be at least 8 characters"
-            continue
-        fi
-        
-        local confirm
-        echo -e -n "${BLUE}?${NC} Confirm passphrase: "
-		read -rs confirm
-        echo
-        
-        if [[ "$ZFS_PASSPHRASE" == "$confirm" ]]; then
-            success "Passphrase set"
+        if [[ "$pass1" == "$pass2" ]]; then
+            if [[ ${#pass1} -lt 8 ]]; then
+                error "Passphrase must be at least 8 characters!"
+                continue
+            fi
+            ZFS_PASSPHRASE="$pass1"
+            success "Passphrase confirmed (${#pass1} characters)"
             break
         else
-            error "Passphrases do not match"
+            error "Passphrases do not match. Try again."
         fi
     done
 }
 
 collect_dataset_name() {
-    header "Root Dataset Configuration"
-    
-    ROOT_DATASET_NAME=$(ask_input \
-        "Enter name for root dataset" \
-        "void" \
-        "validate_dataset_name" \
-        "Invalid dataset name. Use only letters, numbers, hyphens, and underscores")
-    
-    success "Root dataset: $DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-}
-
-collect_swap_configuration() {
-    header "Swap Configuration"
-    
-    if ask_yes_no "Create swap space?" "y"; then
-        CREATE_SWAP=true
-        
-        local mem_gb
-        mem_gb=$(free -g | awk '/^Mem:/{print $2}')
-        local suggested_swap=$((mem_gb + 2))
-        
-        SWAP_SIZE=$(ask_input \
-            "Enter swap size (e.g., 8G, 4096M)" \
-            "${suggested_swap}G" \
-            "validate_swap_size" \
-            "Invalid swap size format. Use format like '8G' or '4096M'")
-        
-        success "Swap size: $SWAP_SIZE"
-    else
-        CREATE_SWAP=false
-        info "Skipping swap creation"
-    fi
-}
-
-collect_system_configuration() {
-    header "System Configuration"
-    
-    # Hostname
-    HOSTNAME=$(ask_input \
-        "Enter hostname" \
-        "voidzfs" \
-        "validate_hostname" \
-        "Invalid hostname. Use only letters, numbers, and hyphens")
-    
-    # Timezone
-    info "Common timezones: America/New_York, America/Chicago, America/Los_Angeles, Europe/London, UTC"
-    
-    # Try with validation first
     while true; do
-        TIMEZONE=$(ask_input \
-            "Enter timezone" \
-            "America/New_York" \
-            "" \
-            "")
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter name for root dataset: "
+        read -r ROOT_DATASET_NAME
         
-        # Check if timezone exists
-        if [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]]; then
-            break
-        fi
-        
-        warning "Timezone not found in /usr/share/zoneinfo"
-        if ask_yes_no "Continue anyway?" "n"; then
-            break
-        fi
-    done
-    
-    # Username
-    USERNAME=$(ask_input \
-        "Enter username for primary user" \
-        "void" \
-        "validate_username" \
-        "Invalid username. Must start with lowercase letter or underscore")
-    
-    success "Hostname: $HOSTNAME"
-    success "Timezone: $TIMEZONE"
-    success "Username: $USERNAME"
-}
-
-collect_passwords() {
-    header "Password Configuration"
-    
-    # Root password
-    while true; do
-        echo -e -n "${BLUE}?${NC} Enter root password (min 6 chars): "
-		read -rs ROOT_PASSWORD
-        echo
-        
-        if ! validate_password_length "$ROOT_PASSWORD"; then
-            error "Password must be at least 6 characters"
+        # Validate name format
+        if [[ ! "$ROOT_DATASET_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            error "Invalid dataset name. Use only letters, numbers, hyphens, and underscores."
             continue
         fi
         
-        local confirm
-        echo -e -n "${BLUE}?${NC} Confirm root password: "
-		read -rs confirm
+        info "Dataset name set to: $ROOT_DATASET_NAME"
+        if [[ "$INSTALL_TYPE" == "dualboot" ]]; then
+            info "Note: Will verify uniqueness when pool is imported"
+        fi
+        break
+    done
+}
+
+collect_swap_config() {
+    echo ""
+    if ask_yes_no "Do you want to create swap space?" "n"; then
+        CREATE_SWAP=true
+        
+        while true; do
+            echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter swap size (e.g., 4G, 8G): "
+            read -r SWAP_SIZE
+            if [[ $SWAP_SIZE =~ ^[0-9]+[GMgm]$ ]]; then
+                info "Swap size set to: $SWAP_SIZE"
+                break
+            else
+                error "Invalid format. Use format like 4G or 8G"
+            fi
+        done
+    else
+        CREATE_SWAP=false
+        info "No swap space will be created"
+    fi
+}
+
+collect_system_info() {
+    # Hostname
+    while true; do
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter hostname: "
+        read -r SYSTEM_HOSTNAME
+        if [[ -n "$SYSTEM_HOSTNAME" ]] && [[ "$SYSTEM_HOSTNAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
+            info "Hostname set to: $SYSTEM_HOSTNAME"
+            break
+        else
+            error "Invalid hostname. Use only letters, numbers, and hyphens."
+        fi
+    done
+    
+    echo ""
+    
+    # Timezone
+    subheader "Common timezones:"
+    bullet "America/New_York"
+    bullet "America/Los_Angeles"
+    bullet "Europe/London"
+    bullet "Asia/Singapore"
+    bullet "Australia/Sydney"
+    echo ""
+    
+    while true; do
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter timezone (default: Asia/Singapore): "
+        read -r SYSTEM_TIMEZONE
+        SYSTEM_TIMEZONE=${SYSTEM_TIMEZONE:-"Asia/Singapore"}
+        
+        if [[ -f "/usr/share/zoneinfo/$SYSTEM_TIMEZONE" ]]; then
+            info "Timezone set to: $SYSTEM_TIMEZONE"
+            break
+        else
+            error "Invalid timezone. Check /usr/share/zoneinfo/ for valid options."
+        fi
+    done
+    
+    echo ""
+    
+    # Username
+    while true; do
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Enter username: "
+        read -r SYSTEM_USERNAME
+        
+        if [[ ! $SYSTEM_USERNAME =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            error "Invalid username. Must start with lowercase letter or underscore."
+            continue
+        fi
+        
+        if [[ "$SYSTEM_USERNAME" == "root" ]] || [[ "$SYSTEM_USERNAME" == "nobody" ]]; then
+            error "Cannot use reserved username: $SYSTEM_USERNAME"
+            continue
+        fi
+        
+        info "Username set to: $SYSTEM_USERNAME"
+        break
+    done
+    
+    echo ""
+    
+    # Root password
+    subheader "Set root password:"
+    while true; do
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Root password: "
+        read -r -s ROOT_PASSWORD
+        echo
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Confirm root password: "
+        read -r -s pass2
         echo
         
-        if [[ "$ROOT_PASSWORD" == "$confirm" ]]; then
+        if [[ "$ROOT_PASSWORD" == "$pass2" ]]; then
+            if [[ ${#ROOT_PASSWORD} -lt 6 ]]; then
+                error "Password must be at least 6 characters!"
+                continue
+            fi
             success "Root password set"
             break
         else
-            error "Passwords do not match"
+            error "Passwords do not match. Try again."
         fi
     done
     
+    echo ""
+    
     # User password
+    subheader "Set password for user: $SYSTEM_USERNAME"
     while true; do
-        echo -e -n "${BLUE}?${NC} Enter password for $USERNAME (min 6 chars): "
-		read -rs USER_PASSWORD
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} User password: "
+        read -r -s USER_PASSWORD
+        echo
+        echo -ne "${BLUE}${SYMBOL_ARROW}${NC} Confirm user password: "
+        read -r -s pass2
         echo
         
-        if ! validate_password_length "$USER_PASSWORD"; then
-            error "Password must be at least 6 characters"
-            continue
-        fi
-        
-        local confirm
-        echo -e -n "${BLUE}?${NC} Confirm password for $USERNAME: "
-		read -rs confirm
-        echo
-        
-        if [[ "$USER_PASSWORD" == "$confirm" ]]; then
+        if [[ "$USER_PASSWORD" == "$pass2" ]]; then
+            if [[ ${#USER_PASSWORD} -lt 6 ]]; then
+                error "Password must be at least 6 characters!"
+                continue
+            fi
             success "User password set"
             break
         else
-            error "Passwords do not match"
+            error "Passwords do not match. Try again."
         fi
     done
 }
 
-show_configuration_summary() {
-    header "Configuration Summary"
+# ============================================
+# INSTALLATION SUMMARY & CONFIRMATION
+# ============================================
+
+show_installation_summary() {
+    header "INSTALLATION SUMMARY"
     
-    print "${BOLD}Installation Configuration:${NC}"
-    separator
-    print "  Installation Type:    $INSTALL_TYPE"
-    print "  Disk:                 $SELECTED_DISK_NAME"
-    print "  Wipe Disk:            $WIPE_DISK"
-    print ""
-    print "  Pool Name:            $DEFAULT_POOL_NAME"
-    print "  Root Dataset:         $DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    print "  Encryption:           $ENCRYPTION_ALGORITHM"
-    print ""
-    print "  Hostname:             $HOSTNAME"
-    print "  Timezone:             $TIMEZONE"
-    print "  Username:             $USERNAME"
-    print ""
-    print "  Create Swap:          $CREATE_SWAP"
-    if [[ "$CREATE_SWAP" == "true" ]]; then
-        print "  Swap Size:            $SWAP_SIZE"
-    fi
-    separator
+    subheader "Installation Configuration:"
+    bullet "Installation Type: $INSTALL_TYPE"
+    echo ""
     
-    echo
-    if ! confirm_action "Proceed with installation?"; then
-        die "Installation cancelled by user"
+    subheader "Disk Configuration:"
+    bullet "Target Disk: $(basename $DISK)"
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        bullet "Wipe Disk: $DISK_TO_WIPE"
+        bullet "Partitions: EFI (512M) + ZFS (remaining)"
     fi
+    echo ""
+    
+    subheader "ZFS Configuration:"
+    bullet "Pool Name: zroot"
+    bullet "Encryption: AES-256-GCM"
+    bullet "Compression: lz4"
+    bullet "Root Dataset: zroot/ROOT/$ROOT_DATASET_NAME"
+    bullet "Passphrase Length: ${#ZFS_PASSPHRASE} characters"
+    echo ""
+    
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        subheader "Additional Datasets:"
+        bullet "Home: zroot/data/home"
+        bullet "Root home: zroot/data/root"
+        if [[ "$CREATE_SWAP" == true ]]; then
+            bullet "Swap: zroot/swap ($SWAP_SIZE)"
+        else
+            bullet "Swap: Not configured"
+        fi
+        echo ""
+    fi
+    
+    subheader "System Configuration:"
+    bullet "Hostname: $SYSTEM_HOSTNAME"
+    bullet "Timezone: $SYSTEM_TIMEZONE"
+    bullet "Locale: en_US.UTF-8"
+    bullet "Keymap: us"
+    echo ""
+    
+    subheader "User Account:"
+    bullet "Username: $SYSTEM_USERNAME"
+    bullet "Groups: network, wheel, video, audio, input, kvm"
+    echo ""
+    
+    subheader "Boot Configuration:"
+    bullet "Boot Method: ZFSBootMenu (EFI)"
+    bullet "Boot Location: /boot/efi/EFI/ZBM/"
+    echo ""
+}
+
+confirm_installation() {
+    echo ""
+    warning "Please review the installation summary above."
+    echo ""
+    
+    if ! confirm_action "This will modify disk $(basename $DISK)" "n"; then
+        echo ""
+        info "Installation aborted by user."
+        info "No changes have been made to your system."
+        exit 0
+    fi
+    
+    header "Beginning Installation - This process is now automated"
 }
 
 # ============================================
-# Installation Functions (No User Input)
+# DISK OPERATION FUNCTIONS
 # ============================================
-wipe_disk() {
-    if [[ "$WIPE_DISK" != "true" ]]; then
+
+wipe() {
+    if [[ "$DISK_TO_WIPE" != true ]]; then
         return 0
     fi
     
-    header "Wiping Disk"
+    info "Wiping disk..."
+    dd if=/dev/zero of="$DISK" bs=512 count=1
+    wipefs -af "$DISK"
+    sgdisk -Zo "$DISK"
+    zpool labelclear -f "$DISK" 2>/dev/null || true
     
-    info "Wiping $SELECTED_DISK..."
-    
-    # Unmount any mounted partitions
-    local mounted_parts
-    mounted_parts=$(lsblk -no MOUNTPOINT "$SELECTED_DISK" 2>/dev/null | grep -v '^$' || true)
-    if [[ -n "$mounted_parts" ]]; then
-        warning "Unmounting partitions..."
-        while IFS= read -r mount; do
-            safe_run umount -f "$mount" || true
-        done <<< "$mounted_parts"
-    fi
-    
-    # Wipe partition table
-    safe_run sgdisk --zap-all "$SELECTED_DISK"
-    
-    # Wipe any ZFS labels
-    safe_run zpool labelclear -f "$SELECTED_DISK" 2>/dev/null || true
-    
-    success "Disk wiped successfully"
-}
-
-partition_disk() {
-    header "Partitioning Disk"
-    
-    info "Creating partitions on $SELECTED_DISK..."
-    
-    # Create GPT partition table
-    safe_run sgdisk --clear "$SELECTED_DISK"
-    
-    # Create EFI partition (1GB)
-    safe_run sgdisk -n 1:0:+1G -t 1:ef00 -c 1:"EFI System Partition" "$SELECTED_DISK"
-    
-    # Create ZFS partition (remaining space)
-    safe_run sgdisk -n 2:0:0 -t 2:bf00 -c 2:"ZFS Pool" "$SELECTED_DISK"
-    
-    # Wait for kernel to re-read partition table
-    safe_run partprobe "$SELECTED_DISK"
+    partprobe "$DISK"
     sleep 2
+    success "Disk wiped"
+}
+
+partition() {
+    info "Creating EFI partition"
+    sgdisk -n1:1M:+512M -t1:EF00 "$DISK"
+    EFI="$DISK-part1"
+
+    info "Creating ZFS partition"
+    sgdisk -n2:0:0 -t2:BF00 "$DISK"
+    ZFS_PARTITION="$DISK-part2"
     
-    # Format EFI partition
-    local efi_part="${SELECTED_DISK}-part1"
-    info "Formatting EFI partition..."
-    safe_run mkfs.vfat -F32 -n EFI "$efi_part"
+    partprobe "$DISK"
+    sleep 2
+
+    until [ -e "$EFI" ]; do sleep 1; done
+    until [ -e "$ZFS_PARTITION" ]; do sleep 1; done
+        
+    info "Formatting EFI partition"    
+    mkfs.vfat -F32 -n "EFI" "$EFI" || die "EFI format failed"
     
-    # Get EFI partition UUID
-    EFI_UUID=$(blkid -s UUID -o value "$efi_part")
-    
+    sgdisk -p "$DISK"
     success "Disk partitioned successfully"
-    info "EFI partition: $efi_part (UUID: $EFI_UUID)"
 }
 
-setup_zfs_encryption() {
-    header "Setting Up ZFS Encryption"
+zfs_passphrase() {
+    info "Creating ZFS encryption key file"
+    echo "$ZFS_PASSPHRASE" > /etc/zfs/zroot.key
+    chmod 000 /etc/zfs/zroot.key
     
-    info "Creating encryption key..."
-    
-    # Create key file directory (in chroot target)
-    mkdir -p "/mnt$(dirname "$ZFS_KEY_FILE")"
-    
-    # Write passphrase to key file
-    echo -n "$ZFS_PASSPHRASE" > "/mnt$ZFS_KEY_FILE"
-    chmod 400 "/mnt$ZFS_KEY_FILE"
-    
-    success "Encryption key created: /mnt$ZFS_KEY_FILE"
+    if [[ ! -f /etc/zfs/zroot.key ]] || [[ ! -s /etc/zfs/zroot.key ]]; then
+        die "Failed to create key file!"
+    fi
+    success "Encryption key file created"
 }
 
-backup_zfs_key() {
-    header "Backing Up ZFS Key"
+zfs_passphrase_backup() {
+    info 'Creating encryption key backup'
+    mkdir -p /mnt/root/zfs-keys
+    zfs get -H -o value keylocation zroot > /mnt/root/zfs-keys/keylocation
+    install -m 000 /etc/zfs/zroot.key /mnt/root/zfs-keys/
     
-    mkdir -p "/mnt$ZFS_KEY_BACKUP_DIR"
-    
-    local backup_file="$ZFS_KEY_BACKUP_DIR/zroot.key.$(date +%Y%m%d_%H%M%S)"
-    safe_run cp "/mnt$ZFS_KEY_FILE" "/mnt$backup_file"
-    chmod 400 "/mnt$backup_file"
-    
-    success "Key backed up to: $backup_file"
+    if ! diff /etc/zfs/zroot.key /mnt/root/zfs-keys/zroot.key &>/dev/null; then
+        die "Key backup verification failed!"
+    fi
+    success "Encryption key backed up"
 }
+
+# ============================================
+# ZFS POOL & DATASET FUNCTIONS
+# ============================================
 
 create_pool() {
-    header "Creating ZFS Pool"
+    info "Creating ZFS pool"
+    zpool create -f -o ashift=12                          \
+                 -o autotrim=on                           \
+                 -O acltype=posixacl                      \
+                 -O compression=lz4                       \
+                 -O relatime=on                           \
+                 -O xattr=sa                              \
+                 -O dnodesize=auto                        \
+                 -O encryption=aes-256-gcm                \
+                 -O keyformat=passphrase                  \
+                 -O keylocation=file:///etc/zfs/zroot.key \
+                 -O normalization=formD                   \
+                 -O mountpoint=none                       \
+                 -O canmount=off                          \
+                 -O devices=off                           \
+                 -R /mnt                                  \
+                 zroot "$ZFS_PARTITION"
     
-    local zfs_part="${SELECTED_DISK}-part2"
-    
-    info "Creating pool: $DEFAULT_POOL_NAME"
-    
-    # Pool creation options
-    local pool_opts=(
-        -o ashift=12
-        -o autotrim=on
-        -O acltype=posixacl
-        -O compression=lz4
-        -O dnodesize=auto
-        -O normalization=formD
-        -O relatime=on
-        -O xattr=sa
-        -O mountpoint=none
-        -R /mnt
-    )
-    
-    safe_run zpool create "${pool_opts[@]}" "$DEFAULT_POOL_NAME" "$zfs_part"
-    
-    success "Pool created: $DEFAULT_POOL_NAME"
+    if ! zpool list zroot &>/dev/null; then
+        die "Pool creation failed!"
+    fi
+    success "ZFS pool created"
 }
 
 create_root_dataset() {
-    header "Creating Root Dataset"
-    
-    # Create ROOT container
-    safe_run zfs create -o mountpoint=none -o canmount=off "$DEFAULT_POOL_NAME/ROOT"
-    
-    # Create root dataset with encryption
-    info "Creating encrypted root dataset..."
-    safe_run zfs create \
-        -o encryption="$ENCRYPTION_ALGORITHM" \
-        -o keyformat="$KEY_FORMAT" \
-        -o keylocation="file:///mnt$ZFS_KEY_FILE" \
-        -o mountpoint=/ \
-        -o canmount=noauto \
-        "$DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    
-    # Mount root dataset
-    safe_run zfs mount "$DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    
-    # Set bootfs property
-    safe_run zpool set bootfs="$DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME" "$DEFAULT_POOL_NAME"
-    
-    success "Root dataset created and mounted"
+    info "Creating root dataset container"
+    zfs create -o mountpoint=none zroot/ROOT
+    zfs set org.zfsbootmenu:commandline="ro quiet loglevel=0" zroot/ROOT
+    success "Root dataset container created"
 }
 
 create_system_dataset() {
-    header "Creating System Dataset"
+    info "Creating system dataset: $ROOT_DATASET_NAME"
+    zfs create -o mountpoint=/ \
+           -o canmount=noauto \
+           -o recordsize=128K \
+           -o atime=off \
+           -o relatime=off \
+           -o devices=off \
+           zroot/ROOT/"$ROOT_DATASET_NAME"
+
+    info "Generating hostid"
+    zgenhostid -f
+
+    if [[ ! -f /etc/hostid ]]; then
+        die "Failed to generate hostid!"
+    fi
     
-    # Create system dataset (inherits encryption)
-    safe_run zfs create -o mountpoint=/home "$DEFAULT_POOL_NAME/home"
-    safe_run zfs create -o mountpoint=/root "$DEFAULT_POOL_NAME/home/root"
-    safe_run zfs create -o mountpoint=/var "$DEFAULT_POOL_NAME/var"
-    safe_run zfs create -o mountpoint=/var/log "$DEFAULT_POOL_NAME/var/log"
-    safe_run zfs create -o mountpoint=/var/cache "$DEFAULT_POOL_NAME/var/cache"
+    if [[ $(stat -c%s /etc/hostid 2>/dev/null) -ne 4 ]]; then
+        die "Hostid file corrupted (wrong size)!"
+    fi
     
-    success "System datasets created"
+    info "Generated hostid: $(hostid)"
+     
+    info "Setting ZFS bootfs"
+    zpool set bootfs="zroot/ROOT/$ROOT_DATASET_NAME" zroot
+
+    zfs mount zroot/ROOT/"$ROOT_DATASET_NAME"
+    
+    if ! mountpoint -q /mnt; then
+        die "Failed to mount root dataset!"
+    fi
+    success "System dataset created and mounted"
 }
 
 create_home_dataset() {
-    header "Creating Home Dataset"
-    
-    safe_run zfs create -o mountpoint="/home/$USERNAME" "$DEFAULT_POOL_NAME/home/$USERNAME"
-    
-    success "Home dataset created for $USERNAME"
+    info "Creating home datasets"
+    zfs create -o mountpoint=none -o canmount=off zroot/data
+    zfs create -o mountpoint=/home \
+               -o recordsize=1M \
+               -o compression=zstd-3 \
+               -o atime=off \
+               zroot/data/home
+    zfs create -o mountpoint=/root \
+               -o recordsize=128K \
+               -o compression=zstd \
+               zroot/data/root
+    success "Home datasets created"
 }
 
 create_swapspace() {
-    if [[ "$CREATE_SWAP" != "true" ]]; then
+    if [[ "$CREATE_SWAP" != true ]]; then
         return 0
     fi
     
-    header "Creating Swap Space"
-    
     info "Creating swap zvol: $SWAP_SIZE"
     
-    safe_run zfs create \
-        -V "$SWAP_SIZE" \
-        -b 4K \
+    zfs create -V "$SWAP_SIZE" -b $(getconf PAGESIZE) \
         -o compression=zle \
         -o logbias=throughput \
-        -o sync=always \
+        -o sync=disabled \
         -o primarycache=metadata \
         -o secondarycache=none \
-        "$DEFAULT_POOL_NAME/swap"
+        -o com.sun:auto-snapshot=false \
+        zroot/swap
+
+    info "Waiting for zvol device..."
+    local count=0
+    until [[ -e /dev/zvol/zroot/swap ]] || [[ $count -ge 30 ]]; do
+        sleep 1
+        ((count++))
+    done
     
-    # Format as swap
-    safe_run mkswap -f "/dev/zvol/$DEFAULT_POOL_NAME/swap"
+    if [[ ! -e /dev/zvol/zroot/swap ]]; then
+        die "Swap zvol device did not appear!"
+    fi
+
+    info "Formatting swap"
+    mkswap -f /dev/zvol/zroot/swap
     
-    success "Swap space created"
+    echo "true" > /tmp/swap_created
+    success "Swap zvol created"
 }
 
 export_pool() {
-    header "Exporting Pool"
+    info "Exporting zpool"
+    zpool export zroot
     
-    safe_run zpool export "$DEFAULT_POOL_NAME"
-    
+    if zpool list zroot &>/dev/null; then
+        die "Pool export failed!"
+    fi
     success "Pool exported"
 }
 
 import_pool() {
-    header "Importing Pool"
+    info "Importing zpool"
+    zpool import -d /dev/disk/by-id -R /mnt zroot -N -f || {
+        die "Failed to import pool"
+    }
     
-    # Import pool
-    safe_run zpool import -d /dev/disk/by-id -R /mnt "$DEFAULT_POOL_NAME"
+    zfs load-key zroot || {
+        die "Failed to load encryption key"
+    }
     
-    # Load key and mount
-    info "Loading encryption key..."
-    safe_run zfs load-key -L "file:///mnt$ZFS_KEY_FILE" "$DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    
-    info "Mounting filesystems..."
-    safe_run zfs mount "$DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    safe_run zfs mount -a
-    
-    success "Pool imported and mounted"
+    if ! zpool list zroot &>/dev/null; then
+        die "Pool not imported!"
+    fi
+    success "Pool imported and unlocked"
 }
 
 mount_system() {
-    header "Mounting System Partitions"
+    info "Mounting system datasets"
+    zfs mount zroot/ROOT/"$ROOT_DATASET_NAME"
+    zfs mount -a
+
+    if ! mountpoint -q /mnt; then
+        die "Root dataset not mounted!"
+    fi
+
+    info "Mounting EFI partition"
+    mkdir -p /mnt/boot/efi
+    mount "$EFI" /mnt/boot/efi
     
-    # Create and mount EFI
-    mkdir -p "/mnt$ESP_MOUNT"
-    local efi_part="${SELECTED_DISK}-part1"
-    safe_run mount "$efi_part" "/mnt$ESP_MOUNT"
-    
-    # Create essential directories
-    mkdir -p /mnt/dev
-    mkdir -p /mnt/proc
-    mkdir -p /mnt/sys
-    mkdir -p /mnt/tmp
-    
-    # Mount pseudo filesystems
-    safe_run mount -t proc proc /mnt/proc
-    safe_run mount -t sysfs sys /mnt/sys
-    safe_run mount -B /dev /mnt/dev
-    safe_run mount -t devpts pts /mnt/dev/pts
-    
-    success "System partitions mounted"
+    if ! mountpoint -q /mnt/boot/efi; then
+        die "EFI partition not mounted!"
+    fi
+    success "All filesystems mounted"
 }
 
 copy_zpool_cache() {
-    header "Copying ZFS Cache"
+    info "Generating and copying ZFS cache"
+    mkdir -p /mnt/etc/zfs
     
-    mkdir -p "/mnt$(dirname "$ZFS_CACHE_FILE")"
+    zpool set cachefile=/etc/zfs/zpool.cache zroot
     
-    if [[ -f "$ZFS_CACHE_FILE" ]]; then
-        safe_run cp "$ZFS_CACHE_FILE" "/mnt$ZFS_CACHE_FILE"
-        success "ZFS cache copied"
+    sleep 2
+    
+    if [[ ! -s /etc/zfs/zpool.cache ]]; then
+        die "zpool.cache is missing or empty!"
+    fi
+    
+    cp /etc/zfs/zpool.cache /mnt/etc/zfs/
+    
+    if ! diff /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache &>/dev/null; then
+        die "Cache file copy verification failed!"
+    fi
+    
+    debug "cachefile property set to: /etc/zfs/zpool.cache"
+    success "ZFS cache configured"
+}
+
+# ============================================
+# INSTALLATION PHASE FUNCTIONS
+# ============================================
+
+phase_disk_preparation() {
+    header "PHASE 1: DISK PREPARATION"
+    
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        wipe
+        partition
+        zfs_passphrase
+        create_pool
+        create_root_dataset
     else
-        warning "ZFS cache file not found, generating..."
-        safe_run zpool set cachefile="$ZFS_CACHE_FILE" "$DEFAULT_POOL_NAME"
-        safe_run cp "$ZFS_CACHE_FILE" "/mnt$ZFS_CACHE_FILE"
-        success "ZFS cache generated and copied"
+        info "Dualboot mode: Skipping disk preparation"
     fi
 }
 
-install_base_system() {
-    header "Installing Base System"
+phase_zfs_configuration() {
+    header "PHASE 2: ZFS CONFIGURATION"
     
-    info "Installing base-system and essential packages..."
+    if [[ "$INSTALL_TYPE" == "dualboot" ]]; then
+        info "Importing existing pool for dualboot"
+        zpool import -d /dev/disk/by-id -R /mnt zroot -N -f || {
+            die "Failed to import existing pool"
+        }
+        
+        zfs load-key zroot || {
+            die "Failed to load encryption key"
+        }
+        
+        # Check if dataset name already exists
+        if zfs list "zroot/ROOT/$ROOT_DATASET_NAME" &>/dev/null; then
+            error "Dataset zroot/ROOT/$ROOT_DATASET_NAME already exists!"
+            die "Please restart and choose a different dataset name."
+        fi
+    fi
     
-    # Define package list
-    local packages=(
-        base-system
-        zfs
-        zfsbootmenu
-        efibootmgr
-        gummiboot
-        iwd
-        dracut
-        linux
-        linux-headers
-        git
-    )
-    
-    # Install packages
-    XBPS_ARCH=x86_64 safe_run xbps-install -Sy -R https://repo-default.voidlinux.org/current -r /mnt "${packages[@]}"
-    
-    success "Base system installed"
-}
-
-configure_system() {
-    header "Configuring System"
-    
-    # Generate hostid
-    info "Generating hostid..."
-    safe_run zgenhostid -f "$(hostid)"
-    safe_run cp "$ZFS_HOSTID_FILE" "/mnt$ZFS_HOSTID_FILE"
-    
-    # Write IWD configuration
-    info "Configuring IWD..."
-    write_iwd_config "/mnt/etc/iwd/main.conf"
-    
-    # Write resolvconf configuration
-    info "Configuring resolvconf..."
-    write_resolvconf_config "/mnt/etc/resolvconf.conf"
-    
-    # Write sysctl configuration
-    info "Configuring sysctl..."
-    write_sysctl_config "/mnt/etc/sysctl.conf"
-    
-    # Configure rc.conf
-    info "Configuring rc.conf..."
-    cat >> /mnt/etc/rc.conf << EOF
-TIMEZONE="$TIMEZONE"
-HARDWARECLOCK="UTC"
-KEYMAP="us"
-FONT="$FONT"
-EOF
-    
-    # Configure vconsole
-    info "Configuring vconsole..."
-    cat >> /mnt/etc/vconsole.conf <<EOF
-FONT=$FONT
-EOF
-    
-    # Write useradd defaults
-    info "Configuring useradd defaults..."
-    write_useradd_defaults "/mnt/etc/default/useradd"
-    
-    # Write dracut ZFS configuration
-    info "Configuring dracut for ZFS..."
-    write_dracut_zfs_config "/mnt$DRACUT_ZFS_CONF"
-    
-    # Write dracut main configuration
-    write_dracut_main_config "/mnt$DRACUT_MAIN_CONF"
-    
-    success "System configured"
-}
-
-configure_users() {
-    header "Configuring Users"
-    
-    # Write user configuration script using template
-    info "Creating user configuration script..."
-    write_user_config_script \
-        "/mnt/tmp/configure_users.sh" \
-        "$ROOT_PASSWORD" \
-        "$USERNAME" \
-        "$USER_PASSWORD"
-    
-    # Execute the script in chroot
-    info "Configuring users in chroot..."
-    safe_run chroot /mnt /tmp/configure_users.sh
-    
-    # Remove the script
-    safe_run rm /mnt/tmp/configure_users.sh
-    
-    success "Users configured"
-}
-
-configure_fstab() {
-    header "Configuring fstab"
-    
-    info "Writing fstab configuration..."
-    write_fstab \
-        "/mnt/etc/fstab" \
-        "$EFI_UUID" \
-        "$ESP_MOUNT" \
-        "$DEFAULT_POOL_NAME" \
-        "$CREATE_SWAP"
-    
-    success "fstab configured"
-}
-
-set_passwords() {
-    header "Setting Passwords"
-    
-    # Passwords already set in configure_users
-    info "Passwords configured in user setup"
-    
-    success "Password configuration complete"
-}
-
-configure_sudo() {
-    header "Configuring Sudo"
-    
-    write_sudoers_wheel "/mnt/etc/sudoers.d/99-wheel"
-    
-    success "Sudo configured for wheel group"
-}
-
-configure_zfsbootmenu() {
-    header "Configuring ZFSBootMenu"
-    
-    # Write ZFSBootMenu configuration
-    info "Writing ZFSBootMenu configuration..."
-    write_zbm_config "/mnt$ZBM_CONFIG"
-    
-    # Write keymap configuration
-    info "Writing keymap configuration..."
-    write_zbm_keymap_config "/mnt$ZBM_KEYMAP_CONF"
-    write_cmdline_keymap "/mnt$CMDLINE_KEYMAP"
-    
-    # Generate ZFSBootMenu
-    info "Generating ZFSBootMenu..."
-    safe_run chroot /mnt /usr/bin/generate-zbm
-    
-    # Create EFI boot entry
-    info "Creating EFI boot entry..."
-    safe_run chroot /mnt efibootmgr --create --disk "$SELECTED_DISK" --part 1 \
-        --label "ZFSBootMenu" \
-        --loader '\EFI\ZBM\vmlinuz.efi' \
-        --unicode
-    
-    success "ZFSBootMenu configured"
-}
-
-enable_services() {
-    header "Enabling Services"
-    
-    # Enable ZFS services
-    for service in "${ZFS_SERVICES[@]}"; do
-        info "Enabling $service..."
-        safe_run ln -sf "$SERVICE_DIR/$service" "/mnt$RUNSVDIR/"
-    done
-    
-    # Enable IWD
-    info "Enabling iwd..."
-    safe_run ln -sf "$SERVICE_DIR/iwd" "/mnt$RUNSVDIR/"
-    
-    # Enable dhcpcd
-    info "Enabling dhcpcd..."
-    safe_run ln -sf "$SERVICE_DIR/dhcpcd" "/mnt$RUNSVDIR/"
-    
-    success "Services enabled"
-}
-
-cleanup_installation() {
-    header "Cleaning Up"
-    
-    # Unmount pseudo filesystems
-    safe_run umount -l /mnt/dev/pts || true
-    safe_run umount -l /mnt/dev || true
-    safe_run umount -l /mnt/proc || true
-    safe_run umount -l /mnt/sys || true
-    
-    # Unmount EFI
-    safe_run umount "/mnt$ESP_MOUNT" || true
-    
-    # Export pool
-    info "Exporting pool..."
-    safe_run zpool export "$DEFAULT_POOL_NAME"
-    
-    success "Cleanup complete"
-}
-
-# ============================================
-# Main Installation Flow
-# ============================================
-main() {
-    header "$SCRIPT_NAME v$SCRIPT_VERSION"
-    
-    info "Starting Void Linux ZFS installation"
-    info "Using zfs-setup.conf v$CONFIG_VERSION"
-    echo
-    
-    # Check prerequisites
-    check_prerequisites
-    
-    # Collect all user input upfront
-    collect_installation_type
-    collect_disk_selection
-    collect_disk_wipe_confirmation
-    collect_zfs_passphrase
-    collect_dataset_name
-    collect_swap_configuration
-    collect_system_configuration
-    collect_passwords
-    
-    # Show summary and confirm
-    show_configuration_summary
-    
-    # Execute installation (no more user interaction)
-    header "Starting Installation"
-    warning "Installation will now proceed without further input"
-    sleep 3
-    
-    wipe_disk
-    partition_disk
-    setup_zfs_encryption
-    create_pool
-    create_root_dataset
     create_system_dataset
-    create_home_dataset
-    create_swapspace
+    
+    if [[ "$INSTALL_TYPE" == "first" ]]; then
+        create_home_dataset
+        create_swapspace
+    fi
+    
     export_pool
     import_pool
     mount_system
     copy_zpool_cache
-    install_base_system
-    configure_system
-    configure_users
-    configure_fstab
-    configure_sudo
-    configure_zfsbootmenu
-    enable_services
-    backup_zfs_key
+    zfs_passphrase_backup
+}
+
+phase_base_system_installation() {
+    header "PHASE 3: BASE SYSTEM INSTALLATION"
     
-    # Cleanup
-    cleanup_installation
+    # Copy xbps keys
+    info 'Copying xbps keys'
+    mkdir -p /mnt/var/db/xbps/keys
+    cp /var/db/xbps/keys/* /mnt/var/db/xbps/keys/
     
-    # Final message
-    separator
-    success "Installation Complete!"
-    separator
-    print ""
-    print "${GREEN}${BOLD}Void Linux with ZFS has been successfully installed!${NC}"
-    print ""
-    print "System Configuration:"
-    print "  Pool:      $DEFAULT_POOL_NAME"
-    print "  Dataset:   $DEFAULT_POOL_NAME/ROOT/$ROOT_DATASET_NAME"
-    print "  Hostname:  $HOSTNAME"
-    print "  Username:  $USERNAME"
-    print ""
-    print "${YELLOW}Important Notes:${NC}"
-    print "  1. Encryption key: $ZFS_KEY_FILE"
-    print "  2. Key backup:     $ZFS_KEY_BACKUP_DIR/"
-    print "  3. Please save your encryption passphrase securely!"
-    print "  4. Boot order: Set 'ZFSBootMenu' as first boot option in UEFI"
-    print ""
-    print "${CYAN}Next Steps:${NC}"
-    print "  1. Remove installation media"
-    print "  2. Reboot the system"
-    print "  3. Enter encryption passphrase at boot"
-    print ""
+    # Install base system
+    info 'Installing Void Linux base system (this may take a while)'
+    XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" \
+      base-system \
+      void-repo-nonfree
     
-    if ask_yes_no "Reboot now?" "n"; then
-        info "Rebooting..."
-        reboot
-    else
-        info "Installation complete. You can reboot manually."
+    # Verify base system installation
+    if [[ ! -f /mnt/usr/bin/xbps-install ]]; then
+        die "Base system installation failed!"
+    fi
+    success "Base system installed"
+    
+    # Init chroot mounts
+    info 'Initializing chroot environment'
+    mount --rbind /sys /mnt/sys && mount --make-rslave /mnt/sys
+    mount --rbind /dev /mnt/dev && mount --make-rslave /mnt/dev
+    mount --rbind /proc /mnt/proc && mount --make-rslave /mnt/proc
+    success "Chroot environment ready"
+    
+    # Disable gummiboot post install hooks
+    echo "GUMMIBOOT_DISABLE=1" > /mnt/etc/default/gummiboot
+    
+    # Install packages
+    info 'Installing required packages'
+    local packages=(
+      zfs
+      zfsbootmenu
+      efibootmgr
+      gummiboot
+      chrony
+      elogind
+      polkit-elogind
+      cronie
+      acpid
+      iwd
+      dhcpcd
+      git
+      openresolv
+      dracut
+    )
+    
+    XBPS_ARCH=$ARCH xbps-install -y -S -r /mnt -R "$REPO" "${packages[@]}"
+    
+    # Verify critical packages
+    for pkg in zfs zfsbootmenu dracut; do
+        if ! chroot /mnt xbps-query $pkg &>/dev/null; then
+            die "Package $pkg not installed!"
+        fi
+    done
+    success "All required packages installed"
+}
+
+phase_system_configuration() {
+    header "PHASE 4: SYSTEM CONFIGURATION"
+    
+    # Set hostname
+    info "Setting hostname: $SYSTEM_HOSTNAME"
+    echo "$SYSTEM_HOSTNAME" > /mnt/etc/hostname
+    
+    # Configure ZFS files
+    info 'Copying ZFS configuration files'
+    cp /etc/hostid /mnt/etc/hostid
+    cp /etc/zfs/zpool.cache /mnt/etc/zfs/zpool.cache
+    cp -p /etc/zfs/zroot.key /mnt/etc/zfs/
+    
+    # Verify ZFS files were copied
+    for file in /mnt/etc/hostid /mnt/etc/zfs/zpool.cache /mnt/etc/zfs/zroot.key; do
+        if [[ ! -f "$file" ]]; then
+            die "Failed to copy $(basename $file)!"
+        fi
+    done
+    success "ZFS configuration files copied"
+    
+    # Configure iwd
+    info 'Configuring iwd'
+    mkdir -p /mnt/etc/iwd
+    cat > /mnt/etc/iwd/main.conf <<"EOF"
+[General]
+UseDefaultInterface=true
+EnableNetworkConfiguration=true
+
+[Network]
+NameResolvingService=resolvconf
+EOF
+    
+    # Configure DNS
+    info 'Configuring DNS'
+    cat >> /mnt/etc/resolvconf.conf <<"EOF"
+resolv_conf=/etc/resolv.conf
+name_servers="1.1.1.1 9.9.9.9"
+EOF
+    
+    # Enable IP forwarding
+    info 'Configuring sysctl'
+    cat > /mnt/etc/sysctl.conf <<"EOF"
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+    
+    # Prepare locales and keymap
+    info 'Configuring locales and keymap'
+    echo 'en_US.UTF-8 UTF-8' > /mnt/etc/default/libc-locales
+    echo 'LANG="en_US.UTF-8"' > /mnt/etc/locale.conf
+    echo 'KEYMAP="us"' > /mnt/etc/vconsole.conf
+    
+    # Configure system
+    info "Configuring timezone: $SYSTEM_TIMEZONE"
+    cat >> /mnt/etc/rc.conf << EOF
+TIMEZONE="$SYSTEM_TIMEZONE"
+HARDWARECLOCK="UTC"
+KEYMAP="us"
+FONT="drdos8x14"
+EOF
+    
+    # Configure dracut for ZFS
+    info 'Configuring dracut'
+    mkdir -p /mnt/etc/dracut.conf.d
+    
+    cat > /mnt/etc/dracut.conf.d/zfs.conf <<"EOF"
+hostonly="yes"
+hostonly_cmdline="no"
+nofsck="yes"
+add_dracutmodules+=" zfs "
+omit_dracutmodules+=" btrfs resume "
+install_items+=" /etc/zfs/zroot.key /etc/hostid "
+force_drivers+=" zfs "
+filesystems+=" zfs "
+EOF
+    
+    cat > /mnt/etc/dracut.conf <<"EOF"
+hostonly="yes"
+compress="zstd"
+add_drivers+=" zfs "
+omit_dracutmodules+=" network plymouth "
+EOF
+    
+    success "System configuration complete"
+}
+
+phase_user_configuration() {
+    header "PHASE 5: USER CONFIGURATION"
+    
+    # Chroot and configure system
+    info 'Configuring system services and users in chroot'
+    chroot /mnt/ /bin/bash -e <<CHROOT_EOF
+      set -e
+      
+      # Configure DNS
+      resolvconf -u
+    
+      # Enable essential services
+      ln -sf /etc/sv/dhcpcd /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/iwd /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/chronyd /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/crond /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/dbus /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/acpid /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/elogind /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/polkitd /etc/runit/runsvdir/default/
+      
+      # Enable ZFS services
+      ln -sf /etc/sv/zfs-import /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/zfs-mount /etc/runit/runsvdir/default/
+      ln -sf /etc/sv/zfs-zed /etc/runit/runsvdir/default/
+    
+      # Set timezone
+      ln -sf "/usr/share/zoneinfo/$SYSTEM_TIMEZONE" /etc/localtime
+      
+      # Generate locales
+      xbps-reconfigure -f glibc-locales
+    
+      # Create user home dataset
+      if ! zfs list zroot/data/home/${SYSTEM_USERNAME} &>/dev/null; then
+        zfs create zroot/data/home/${SYSTEM_USERNAME}
+      fi
+      
+      # Add user
+      useradd -m -d /home/${SYSTEM_USERNAME} -G network,wheel,video,audio,input,kvm ${SYSTEM_USERNAME}
+      chown -R ${SYSTEM_USERNAME}:${SYSTEM_USERNAME} /home/${SYSTEM_USERNAME}
+      
+      # Activate swap if created
+      if [[ -f /tmp/swap_created ]] && [[ "\$(cat /tmp/swap_created)" == "true" ]]; then
+        sleep 2
+        if [[ -e /dev/zvol/zroot/swap ]]; then
+          swapon /dev/zvol/zroot/swap 2>/dev/null || true
+        fi
+      fi
+CHROOT_EOF
+    
+    success "Services and user account configured"
+    
+    # Configure fstab
+    info 'Configuring fstab'
+    local EFI_UUID
+    EFI_UUID=$(blkid -s UUID -o value "$EFI")
+    
+    cat > /mnt/etc/fstab <<EOF
+# <file system>              <mount point>  <type>  <options>                        <dump> <pass>
+UUID=$EFI_UUID               /boot/efi      vfat    defaults,noatime                 0      2
+tmpfs                        /tmp           tmpfs   defaults,nosuid,nodev,mode=1777  0      0
+tmpfs                        /dev/shm       tmpfs   defaults,nosuid,nodev,noexec     0      0
+efivarfs                     /sys/firmware/efi/efivars efivarfs defaults              0      0
+EOF
+    
+    # Add swap entry if created
+    if [[ -f /tmp/swap_created ]] && [[ "$(cat /tmp/swap_created)" == "true" ]]; then
+        echo "/dev/zvol/zroot/swap  none           swap    defaults,pri=100                 0      0" >> /mnt/etc/fstab
+    fi
+    success "fstab configured"
+    
+    # Set passwords
+    info 'Setting passwords'
+    echo "root:$ROOT_PASSWORD" | chroot /mnt chpasswd
+    echo "$SYSTEM_USERNAME:$USER_PASSWORD" | chroot /mnt chpasswd
+    success "Passwords set"
+    
+    # Configure sudo
+    info 'Configuring sudo'
+    cat > /mnt/etc/sudoers.d/99-wheel <<EOF
+## Allow members of group wheel to execute any command
+%wheel ALL=(ALL:ALL) ALL
+
+## Uncomment to allow members of group wheel to execute any command without password
+# %wheel ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+    
+    chmod 0440 /mnt/etc/sudoers.d/99-wheel
+    
+    # Verify sudo configuration
+    if ! chroot /mnt visudo -c -f /etc/sudoers.d/99-wheel; then
+        die "Invalid sudo configuration!"
+    fi
+    success "sudo configured"
+}
+
+phase_boot_configuration() {
+    header "PHASE 6: BOOT CONFIGURATION"
+    
+    # Configure ZFSBootMenu
+    info 'Configuring ZFSBootMenu'
+    
+    mkdir -p /mnt/boot/efi/EFI/ZBM /mnt/etc/zfsbootmenu/dracut.conf.d
+    
+    cat > /mnt/etc/zfsbootmenu/config.yaml <<EOF
+Global:
+  ManageImages: true
+  BootMountPoint: /boot/efi
+  DracutConfDir: /etc/zfsbootmenu/dracut.conf.d
+Components:
+  Enabled: false
+EFI:
+  ImageDir: /boot/efi/EFI/ZBM
+  Versions: false
+  Enabled: true
+Kernel:
+  CommandLine: ro quiet loglevel=0 nowatchdog
+  Prefix: vmlinuz
+EOF
+    
+    # Configure dracut for ZBM
+    cat > /mnt/etc/zfsbootmenu/dracut.conf.d/keymap.conf <<EOF
+install_optional_items+=" /etc/cmdline.d/keymap.conf "
+EOF
+    
+    mkdir -p /mnt/etc/cmdline.d/
+    cat > /mnt/etc/cmdline.d/keymap.conf <<EOF
+rd.vconsole.keymap=us
+EOF
+    
+    success "ZFSBootMenu configured"
+    
+    # Set ZFS boot commandline
+    info "Setting ZFS boot parameters"
+    zfs set org.zfsbootmenu:commandline="ro quiet nowatchdog loglevel=0 zbm.timeout=5" zroot/ROOT/"$ROOT_DATASET_NAME"
+    
+    # Generate ZFSBootMenu
+    info 'Generating ZFSBootMenu and initramfs (this may take a while)'
+    chroot /mnt/ /bin/bash -e <<"EOF"
+      set -e
+    
+      # Export locale
+      export LANG="en_US.UTF-8"
+    
+      # Reconfigure all packages to generate initramfs
+      xbps-reconfigure -fa
+      
+      # Verify ZBM files were generated
+      if [[ ! -f /boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
+        echo "ERROR: ZFSBootMenu generation failed!" >&2
+        exit 1
+      fi
+      
+      # Verify initramfs contains ZFS module
+      if ! lsinitrd /boot/initramfs-*.img 2>/dev/null | grep -q "zfs.ko"; then
+        echo "WARNING: ZFS module may not be in initramfs!"
+      fi
+EOF
+    
+    # Verify critical boot files
+    if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
+        die "ZFSBootMenu EFI file not found!"
+    fi
+    success "ZFSBootMenu and initramfs generated"
+    
+    # Create backup
+    if [[ ! -f /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi ]]; then
+        info "Creating ZFSBootMenu backup"
+        cp /mnt/boot/efi/EFI/ZBM/vmlinuz.efi /mnt/boot/efi/EFI/ZBM/vmlinuz-backup.efi
+    fi
+    
+    # Create UEFI boot entries
+    info 'Creating EFI boot entries'
+    modprobe efivarfs
+    mountpoint -q /sys/firmware/efi/efivars \
+        || mount -t efivarfs efivarfs /sys/firmware/efi/efivars
+    
+    # Remove existing ZFSBootMenu entries
+    if efibootmgr | grep -q "ZFSBootMenu"; then
+        info "Removing old ZFSBootMenu entries"
+        for entry in $(efibootmgr | grep "ZFSBootMenu" | sed -E 's/Boot([0-9]+).*/\1/'); do   
+            efibootmgr -B -b "$entry"
+        done
+    fi
+    
+    # Create backup entry
+    info "Creating backup boot entry"
+    if ! efibootmgr --disk "$DISK" \
+      --part 1 \
+      --create \
+      --label "ZFSBootMenu Backup" \
+      --loader "\EFI\ZBM\vmlinuz-backup.efi" \
+      --verbose; then
+        warning "Failed to create backup boot entry!"
+    fi
+    
+    # Create main entry
+    info "Creating main boot entry"
+    if ! efibootmgr --disk "$DISK" \
+      --part 1 \
+      --create \
+      --label "ZFSBootMenu" \
+      --loader "\EFI\ZBM\vmlinuz.efi" \
+      --verbose; then
+        die "Failed to create main boot entry!"
+    fi
+    
+    # Display boot order
+    subheader "Current boot order:"
+    efibootmgr
+    success "Boot configuration complete"
+}
+
+phase_cleanup() {
+    header "PHASE 7: CLEANUP"
+    
+    info 'Unmounting filesystems'
+    
+    # Unmount EFI
+    umount /mnt/boot/efi || {
+        warning "Failed to unmount /mnt/boot/efi"
+    }
+    
+    # Unmount bind mounts
+    umount -l /mnt/{dev,proc,sys} 2>/dev/null || true
+    
+    # Unmount ZFS filesystems
+    zfs umount -a
+    
+    # Export pool
+    info 'Exporting zpool'
+    zpool export zroot
+    
+    if zpool list zroot &>/dev/null 2>&1; then
+        warning "Pool still imported, forcing export..."
+        zpool export -f zroot
+    fi
+    
+    success "Cleanup complete"
+}
+
+phase_verification() {
+    header "INSTALLATION VERIFICATION"
+    
+    print_status "success" "ZFS pool created: zroot"
+    print_status "success" "Root dataset: zroot/ROOT/$ROOT_DATASET_NAME"
+    print_status "success" "Encryption: AES-256-GCM"
+    print_status "success" "Hostname: $SYSTEM_HOSTNAME"
+    print_status "success" "User: $SYSTEM_USERNAME"
+    print_status "success" "Timezone: $SYSTEM_TIMEZONE"
+    print_status "success" "ZFSBootMenu: installed"
+    print_status "success" "UEFI entries: created"
+    if [[ "$CREATE_SWAP" == true ]]; then
+        print_status "success" "Swap: configured ($SWAP_SIZE)"
     fi
 }
 
 # ============================================
-# Script Entry Point
+# MAIN FUNCTION
 # ============================================
+
+main() {
+    # Parse command line arguments
+    if [[ "$1" == "debug" ]]; then
+        set -x
+        DEBUG_MODE=true
+        CURRENT_LOG_LEVEL=$LOG_LEVEL_DEBUG
+    fi
+    
+    # Banner
+    echo ""
+    echo -e "${MAGENTA}╔════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║   VOID LINUX ZFS INSTALLATION SCRIPT       ║${NC}"
+    echo -e "${MAGENTA}║   Version 3.0                              ║${NC}"
+    echo -e "${MAGENTA}╚════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Phase 0: Prerequisites
+    check_prerequisites
+    
+    # Phase 1: User Input Collection
+    collect_user_inputs
+    
+    # Phase 2: Summary and Confirmation
+    show_installation_summary
+    confirm_installation
+    
+    # Phase 3: Disk Preparation
+    phase_disk_preparation
+    
+    # Phase 4: ZFS Configuration
+    phase_zfs_configuration
+    
+    # Phase 5: Base System Installation
+    phase_base_system_installation
+    
+    # Phase 6: System Configuration
+    phase_system_configuration
+    
+    # Phase 7: User Configuration
+    phase_user_configuration
+    
+    # Phase 8: Boot Configuration
+    phase_boot_configuration
+    
+    # Phase 9: Cleanup
+    phase_cleanup
+    
+    # Phase 10: Verification
+    phase_verification
+    
+    # Success message
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  Installation completed successfully!  ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    subheader "Next steps:"
+    bullet "Remove installation media"
+    bullet "Reboot the system"
+    bullet "At ZFSBootMenu, select your boot environment"
+    bullet "Enter encryption passphrase when prompted"
+    echo ""
+    info "To reboot now, run: reboot"
+    echo ""
+}
+
+# ============================================
+# SCRIPT ENTRY POINT
+# ============================================
+
+# Execute main function with all arguments
 main "$@"
+
+exit 0
