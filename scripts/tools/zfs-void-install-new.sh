@@ -801,7 +801,7 @@ phase_base_system_installation() {
     header "PHASE 3: BASE SYSTEM INSTALLATION"
     
     # Copy xbps keys
-    info 'Copying xbps keys to ${INSTALLATION_MOUNTPOINT}'
+    info "Copying xbps keys to ${INSTALLATION_MOUNTPOINT}"
     mkdir -p "${INSTALLATION_MOUNTPOINT}/var/db/xbps/keys"
     cp /var/db/xbps/keys/* "${INSTALLATION_MOUNTPOINT}/var/db/xbps/keys/"
     
