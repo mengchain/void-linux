@@ -57,15 +57,7 @@ set_error_trap       # Traps ERR signal
 # ============================================
 # Load Configuration
 # ============================================
-CONFIG_FILE="${CONFIG_FILE:-/etc/zfs-setup.conf}"
-if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
-else
-    echo "ERROR: Configuration file not found: $CONFIG_FILE"
-    echo "Please ensure zfs-setup.conf is installed at /etc/zfs-setup.conf"
-    exit 1
-fi
-
+load_config "zfs-setup.conf"
 
 # ============================================
 # Script Configuration
