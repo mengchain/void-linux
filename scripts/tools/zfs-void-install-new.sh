@@ -811,7 +811,11 @@ phase_base_system_installation() {
       base-system \
       void-repo-nonfree &>/tmp/base-install.log &
     
-    spinner $! "Installing base system"
+    if ! spinner $! "Installing base system"; then
+        # This block runs if spinner returns non-zero
+        error "Installation failed: Check /tmp/base-install.log"
+        die "Aborting"
+    fi
     
     # Verify base system installation
     if [[ ! -f "${INSTALLATION_MOUNTPOINT}/usr/bin/xbps-install" ]]; then
@@ -852,6 +856,12 @@ phase_base_system_installation() {
     
     spinner $! "Installing Installing ZFS and system packages"
     
+    if ! spinner $! "Installing Installing ZFS and system packages"; then
+        # This block runs if spinner returns non-zero
+        error "Installation failed: Check /tmp/package-install.log"
+        die "Aborting"
+    fi
+
     # Verify critical packages
     for pkg in zfs zfsbootmenu dracut; do
         if ! chroot "${CHROOT_MOUNTPOINT}" xbps-query $pkg &>/dev/null; then
