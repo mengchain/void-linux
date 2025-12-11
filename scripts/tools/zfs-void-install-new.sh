@@ -947,7 +947,19 @@ EOF
 
 phase_user_configuration() {
     header "PHASE 5: USER CONFIGURATION"
+    # Validate that required variables are set
+    if [[ -z "$ROOT_PASSWORD" ]]; then
+        die "Root password not set!"
+    fi
     
+    if [[ -z "$USER_PASSWORD" ]]; then
+        die "User password not set!"
+    fi
+    
+    if [[ -z "$SYSTEM_USERNAME" ]]; then
+        die "System username not set!"
+    fi
+     
     # Chroot and configure system
     info 'Configuring system services and users in chroot environment at ${CHROOT_MOUNTPOINT}'
     chroot "${CHROOT_MOUNTPOINT}/" /bin/bash -e <<CHROOT_EOF
@@ -1017,10 +1029,25 @@ EOF
     success "fstab configured"
     
     # Set passwords
-    info 'Setting passwords'
-    echo "root:$ROOT_PASSWORD" | chroot "${CHROOT_MOUNTPOINT}" chpasswd
-    echo "$SYSTEM_USERNAME:$USER_PASSWORD" | chroot "${CHROOT_MOUNTPOINT}" chpasswd
-    success "Passwords set"
+    # Set root password
+    info "Setting root password..."
+    debug "Password length: ${#ROOT_PASSWORD}"
+    echo -e "$ROOT_PASSWORD\n$ROOT_PASSWORD" | chroot "${CHROOT_MOUNTPOINT}" passwd root
+    if [[ $? -eq 0 ]]; then
+        success "Root password set successfully"
+    else
+        die "Failed to set root password!"
+    fi
+    
+    # Set user password  
+    info "Setting password for user: $SYSTEM_USERNAME"
+    debug "Password length: ${#USER_PASSWORD}"
+    echo -e "$USER_PASSWORD\n$USER_PASSWORD" | chroot "${CHROOT_MOUNTPOINT}" passwd "$SYSTEM_USERNAME"
+    if [[ $? -eq 0 ]]; then
+        success " $SYSTEM_USERNAME password set successfully"
+    else
+        die "Failed to set user password!"
+    fi
     
     # Configure sudo
     info 'Configuring sudo'
