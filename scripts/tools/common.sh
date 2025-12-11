@@ -466,24 +466,75 @@ indent() {
     [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "${spaces}${message}" >> "$LOG_FILE" 2>/dev/null
 }
 
-# Progress bar
+# Display progress bar
+# Usage: progress_bar <current> <total> [width] [prefix]
 progress_bar() {
-    local current="$1"
-    local total="$2"
-    local width="${3:-50}"
-    local message="${4:-}"
+    local current=$1
+    local total=$2
+    local width=${3:-50}
+    local prefix="${4:-Progress:}"
     
-    local percentage=$((current * 100 / total))
+    # Validate inputs
+    if [[ $total -eq 0 ]]; then
+        error "progress_bar: total cannot be zero"
+        return 1
+    fi
+    
+    if [[ $current -gt $total ]]; then
+        current=$total
+    fi
+    
+    # Calculate percentage
+    local percent=$((current * 100 / total))
+    
+    # Calculate filled width
     local filled=$((width * current / total))
     local empty=$((width - filled))
     
-    printf "\r%s [" "$message"
-    printf "%${filled}s" | tr ' ' '='
-    printf "%${empty}s" | tr ' ' ' '
-    printf "] %d%%" "$percentage"
+    # Choose characters based on UTF-8 support
+    local fill_char block_char empty_char
+    if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+        fill_char="█"
+        block_char="▓"
+        empty_char="░"
+    else
+        fill_char="="
+        block_char=">"
+        empty_char="-"
+    fi
     
+    # Build progress bar
+    local bar=""
+    
+    # Add filled portion
+    if [[ $filled -gt 0 ]]; then
+        for ((i=0; i<filled-1; i++)); do
+            bar+="$fill_char"
+        done
+        
+        # Add transition character if not complete
+        if [[ $current -lt $total ]]; then
+            bar+="$block_char"
+        else
+            bar+="$fill_char"
+        fi
+    fi
+    
+    # Add empty portion
+    for ((i=0; i<empty; i++)); do
+        bar+="$empty_char"
+    done
+    
+    # Print progress bar with carriage return (overwrites previous line)
+    printf "\r%s [%s] %3d%% (%d/%d)" "$prefix" "$bar" "$percent" "$current" "$total"
+    
+    # Add completion indicator and newline when complete
     if [[ $current -eq $total ]]; then
-        echo ""
+        if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+            printf " ${COLOR_SUCCESS}✓${COLOR_RESET}\n"
+        else
+            printf " ${COLOR_SUCCESS}[OK]${COLOR_RESET}\n"
+        fi
     fi
 }
 
@@ -499,44 +550,58 @@ separator() {
 }
 
 # Show a spinner while command runs
+# Usage: command & spinner $! "Loading message"
 spinner() {
     local pid=$1
     local message="${2:-Processing...}"
-    local spin='-\|/'
-    local i=0
+    local delay=0.1
+    local spinstr
+    local symbol_ok symbol_fail
+    
+    # Choose spinner characters based on UTF-8 support
+    if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+        spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        symbol_ok="✓"
+        symbol_fail="✗"
+    else
+        spinstr='|/-\\'
+        symbol_ok="OK"
+        symbol_fail="FAIL"
+    fi
     
     # Hide cursor
     tput civis 2>/dev/null || true
     
-    echo -n "$message "
+    # Display message
+    echo -n "${message} "
+    
+    # Spin while process is running
     while kill -0 "$pid" 2>/dev/null; do
-        i=$(( (i+1) % 4 ))
-        printf "\r%s [%c]" "$message" "${spin:$i:1}"
-        sleep 0.1
+        local temp=${spinstr#?}
+        printf "[%c]" "$spinstr"
+        spinstr=$temp${spinstr%"$temp"}
+        sleep "$delay"
+        printf "\b\b\b"
     done
     
-    # Get exit status
-    wait "$pid"
-    local exit_status=$?
+    # Clear spinner
+    printf "   \b\b\b"
     
     # Show cursor
     tput cnorm 2>/dev/null || true
     
-    if [[ $exit_status -eq 0 ]]; then
-        if [[ -n "$GREEN" ]]; then
-            printf "\r%s [${GREEN}${SYMBOL_SUCCESS}${NC}]\n" "$message"
-        else
-            printf "\r%s [${SYMBOL_SUCCESS}]\n" "$message"
-        fi
+    # Wait for process and get exit code
+    wait "$pid"
+    local exit_code=$?
+    
+    # Show result
+    if [[ $exit_code -eq 0 ]]; then
+        printf "[${COLOR_SUCCESS}%s${COLOR_RESET}]\n" "$symbol_ok"
     else
-        if [[ -n "$RED" ]]; then
-            printf "\r%s [${RED}${SYMBOL_ERROR}${NC}]\n" "$message"
-        else
-            printf "\r%s [${SYMBOL_ERROR}]\n" "$message"
-        fi
+        printf "[${COLOR_ERROR}%s${COLOR_RESET}]\n" "$symbol_fail"
     fi
     
-    return $exit_status
+    return $exit_code
 }
 
 # Print status
