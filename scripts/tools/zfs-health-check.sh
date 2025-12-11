@@ -25,22 +25,6 @@
 #   --verbose             Show detailed output
 #   --help                Show this help message
 
-# Enable strict mode and error trapping
-set_strict_mode      # Sets: set -euo pipefail
-set_error_trap       # Traps ERR signal
-
-# ============================================
-# Load Configuration
-# ============================================
-CONFIG_FILE="${CONFIG_FILE:-/etc/zfs-setup.conf}"
-if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
-else
-    echo "ERROR: Configuration file not found: $CONFIG_FILE"
-    echo "Please ensure zfs-setup.conf is installed at /etc/zfs-setup.conf"
-    exit 1
-fi
-
 # ============================================
 # Load Common Library
 # ============================================
@@ -64,6 +48,24 @@ else
     echo "  - $SCRIPT_DIR/common.sh"
     exit 1
 fi
+
+
+# Enable strict mode and error trapping
+set_strict_mode      # Sets: set -euo pipefail
+set_error_trap       # Traps ERR signal
+
+# ============================================
+# Load Configuration
+# ============================================
+CONFIG_FILE="${CONFIG_FILE:-/etc/zfs-setup.conf}"
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+else
+    echo "ERROR: Configuration file not found: $CONFIG_FILE"
+    echo "Please ensure zfs-setup.conf is installed at /etc/zfs-setup.conf"
+    exit 1
+fi
+
 
 # ============================================
 # Script Configuration
