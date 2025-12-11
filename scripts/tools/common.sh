@@ -60,6 +60,69 @@ LOG_FILE_WRITABLE=false
 _cleanup_handlers=()
 
 # ============================================
+# CONFIGURATION AND ENVIRONMENT FUNCTIONS
+# ============================================
+# Load configuration file with validation
+load_config() {
+    local config_file="$1"
+    local required_vars=("${@:2}")
+    
+    if [[ ! -f "$config_file" ]]; then
+        error "Configuration file not found: $config_file"
+        return 1
+    fi
+    
+    # Source config file in a subshell first to validate
+    if ! (source "$config_file" 2>/dev/null); then
+        error "Invalid configuration file: $config_file"
+        return 1
+    fi
+    
+    source "$config_file"
+    
+    # Validate required variables
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            error "Required configuration variable not set: $var"
+            return 1
+        fi
+    done
+    
+    success "Configuration loaded: $config_file"
+}
+
+# Set default values for variables
+set_defaults() {
+    local -A defaults=("$@")
+    
+    for var in "${!defaults[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            declare -g "$var"="${defaults[$var]}"
+            debug "Set default: $var=${defaults[$var]}"
+        fi
+    done
+}
+
+# Check for required environment variables
+check_env_vars() {
+    local missing=()
+    
+    for var in "$@"; do
+        if [[ -z "${!var:-}" ]]; then
+            missing+=("$var")
+        fi
+    done
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        error "Missing required environment variables: ${missing[*]}"
+        return 1
+    fi
+    
+    return 0
+}
+
+
+# ============================================
 # COLOR DEFINITIONS
 # ============================================
 
@@ -573,6 +636,45 @@ confirm_action() {
 }
 
 # ============================================
+# ENHANCED ERROR HANDLING
+# ============================================
+
+# Set strict error handling
+set_strict_mode() {
+    set -euo pipefail
+    IFS=$'\n\t'
+}
+
+# Error handler with context
+error_handler() {
+    local exit_code=$?
+    local line_number=$1
+    local command="$2"
+    
+    error "Error on line $line_number: $command (exit code: $exit_code)"
+    
+    if [[ "$LOG_FILE_WRITABLE" == "true" ]]; then
+        {
+            echo "ERROR CONTEXT:"
+            echo "  Exit code: $exit_code"
+            echo "  Line: $line_number"
+            echo "  Command: $command"
+            echo "  Working directory: $(pwd)"
+            echo "  User: $(whoami)"
+            echo "  Date: $(date)"
+        } >> "$LOG_FILE" 2>/dev/null
+    fi
+    
+    run_cleanup
+    exit "$exit_code"
+}
+
+# Set error trap
+set_error_trap() {
+    trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
+}
+
+# ============================================
 # LOGGING FUNCTIONS
 # ============================================
 
@@ -784,6 +886,63 @@ trim() {
     # Remove trailing whitespace
     var="${var%"${var##*[![:space:]]}"}"
     echo "$var"
+}
+
+# ============================================
+# PERFORMANCE AND MONITORING
+# ============================================
+
+# Time command execution
+time_command() {
+    local start_time
+    local end_time
+    local duration
+    
+    start_time=$(date +%s.%N)
+    "$@"
+    local exit_code=$?
+    end_time=$(date +%s.%N)
+    
+    duration=$(echo "$end_time - $start_time" | bc -l 2>/dev/null || echo "0")
+    info "Command completed in ${duration}s: $*"
+    
+    return $exit_code
+}
+
+# Get system load average
+get_load_average() {
+    local period="${1:-1}"  # 1, 5, or 15 minutes
+    
+    case "$period" in
+        1) awk '{print $1}' /proc/loadavg ;;
+        5) awk '{print $2}' /proc/loadavg ;;
+        15) awk '{print $3}' /proc/loadavg ;;
+        *) error "Invalid period: $period (use 1, 5, or 15)"; return 1 ;;
+    esac
+}
+
+# Monitor directory for changes
+watch_directory() {
+    local directory="$1"
+    local callback="$2"
+    local timeout="${3:-0}"
+    
+    if ! command_exists inotifywait; then
+        error "inotifywait not available for directory monitoring"
+        return 1
+    fi
+    
+    info "Monitoring directory: $directory"
+    
+    local cmd=(inotifywait -m -e modify,create,delete,move "$directory")
+    if [[ $timeout -gt 0 ]]; then
+        cmd+=(--timeout "$timeout")
+    fi
+    
+    "${cmd[@]}" | while read -r path action file; do
+        debug "Directory change detected: $action $file"
+        $callback "$path" "$action" "$file"
+    done
 }
 
 # ============================================
