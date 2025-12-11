@@ -63,32 +63,69 @@ _cleanup_handlers=()
 # CONFIGURATION AND ENVIRONMENT FUNCTIONS
 # ============================================
 # Load configuration file with validation
+# Load configuration file with validation
+# Searches for config in order: current directory -> /etc/ -> /
 load_config() {
-    local config_file="$1"
+    local config_name="$1"
     local required_vars=("${@:2}")
+    local config_file=""
     
-    if [[ ! -f "$config_file" ]]; then
-        error "Configuration file not found: $config_file"
-        return 1
-    fi
+    # Define search locations in order
+    local search_locations=(
+        "./${config_name}"           # Current directory (highest priority)
+        "/etc/${config_name}"        # System config directory
+        "/${config_name}"            # Root directory (lowest priority)
+    )
     
-    # Source config file in a subshell first to validate
-    if ! (source "$config_file" 2>/dev/null); then
-        error "Invalid configuration file: $config_file"
-        return 1
-    fi
-    
-    source "$config_file"
-    
-    # Validate required variables
-    for var in "${required_vars[@]}"; do
-        if [[ -z "${!var:-}" ]]; then
-            error "Required configuration variable not set: $var"
-            return 1
+    # Search for config file
+    debug "Searching for configuration file: $config_name"
+    for location in "${search_locations[@]}"; do
+        debug "  Checking: $location"
+        if [[ -f "$location" ]]; then
+            config_file="$location"
+            info "Found configuration file: $config_file"
+            break
         fi
     done
     
+    # If not found, report error with search locations
+    if [[ -z "$config_file" ]]; then
+        error "Configuration file not found: $config_name"
+        echo "Searched locations:" >&2
+        for location in "${search_locations[@]}"; do
+            echo "  - $location" >&2
+        done
+        echo "" >&2
+        echo "Please ensure $config_name is installed in one of these locations" >&2
+        return 1
+    fi
+    
+    # Validate config file can be sourced (syntax check in subshell)
+    if ! (source "$config_file" 2>/dev/null); then
+        error "Invalid configuration file syntax: $config_file"
+        echo "Please check the file for syntax errors" >&2
+        return 1
+    fi
+    
+    # Source the configuration file
+    source "$config_file"
+    
+    # Validate required variables are set
+    local missing_vars=()
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            missing_vars+=("$var")
+        fi
+    done
+    
+    if [[ ${#missing_vars[@]} -gt 0 ]]; then
+        error "Required configuration variables not set: ${missing_vars[*]}"
+        echo "Please ensure these variables are defined in: $config_file" >&2
+        return 1
+    fi
+    
     success "Configuration loaded: $config_file"
+    return 0
 }
 
 # Set default values for variables
