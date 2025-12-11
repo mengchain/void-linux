@@ -25,7 +25,9 @@
 #   --verbose             Show detailed output
 #   --help                Show this help message
 
-set -euo pipefail
+# Enable strict mode and error trapping
+set_strict_mode      # Sets: set -euo pipefail
+set_error_trap       # Traps ERR signal
 
 # ============================================
 # Load Configuration
