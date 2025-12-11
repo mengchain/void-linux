@@ -466,13 +466,18 @@ indent() {
     [[ "$LOG_FILE_WRITABLE" == "true" ]] && echo "${spaces}${message}" >> "$LOG_FILE" 2>/dev/null
 }
 
-# Display progress bar
-# Usage: progress_bar <current> <total> [width] [prefix]
+# Display progress bar with optional status tracking
+# Usage: 
+#   Method 1 (Simple): progress_bar <current> <total> [width] [prefix]
+#   Method 2 (With status): progress_bar <current> <total> [width] [prefix] [status]
+#
+# Returns: 0 for success, 1 for failure (if status tracking is used)
 progress_bar() {
     local current=$1
     local total=$2
     local width=${3:-50}
     local prefix="${4:-Progress:}"
+    local status=${5:-0}
     
     # Validate inputs
     if [[ $total -eq 0 ]]; then
@@ -530,12 +535,51 @@ progress_bar() {
     
     # Add completion indicator and newline when complete
     if [[ $current -eq $total ]]; then
-        if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
-            printf " ${COLOR_SUCCESS}✓${COLOR_RESET}\n"
+        local symbol color
+        
+        case $status in
+            0)  # Success
+                if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+                    symbol="✓"
+                else
+                    symbol="[OK]"
+                fi
+                color="$COLOR_SUCCESS"
+                ;;
+            1)  # Failure
+                if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+                    symbol="✗"
+                else
+                    symbol="[FAIL]"
+                fi
+                color="$COLOR_ERROR"
+                ;;
+            2)  # Warning
+                if [[ "$USE_UTF8_SYMBOLS" == "true" ]]; then
+                    symbol="⚠"
+                else
+                    symbol="[WARN]"
+                fi
+                color="$COLOR_WARNING"
+                ;;
+            *)  # Unknown
+                symbol=""
+                color=""
+                ;;
+        esac
+        
+        if [[ -n "$symbol" ]]; then
+            printf " ${color}%s${COLOR_RESET}\n" "$symbol"
         else
-            printf " ${COLOR_SUCCESS}[OK]${COLOR_RESET}\n"
+            printf "\n"
         fi
+        
+        # Return appropriate exit code
+        return $status
     fi
+    
+    # Not complete yet, return success
+    return 0
 }
 
 # Print separator line
