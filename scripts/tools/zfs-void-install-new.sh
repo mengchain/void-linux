@@ -811,7 +811,7 @@ phase_base_system_installation() {
       base-system \
       void-repo-nonfree &>/tmp/base-install.log &
     
-    if ! spinner $! "Installing base system"; then
+    if ! spinner $! "Installing: base-system"; then
         # This block runs if spinner returns non-zero
         error "Installation failed: Check /tmp/base-install.log"
         die "Aborting"
@@ -834,7 +834,7 @@ phase_base_system_installation() {
     echo "GUMMIBOOT_DISABLE=1" > "${INSTALLATION_MOUNTPOINT}/etc/default/gummiboot"
     
     # Install packages
-    info 'Installing required packages'
+    header 'Installing required packages'
     local packages=(
       zfs
       zfsbootmenu
@@ -852,15 +852,44 @@ phase_base_system_installation() {
       dracut
     )
     
-    XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" "${packages[@]}" &>/tmp/package-install.log &
+    local total=${#packages[@]}
+    local failed_packages=()
     
-    spinner $! "Installing Installing ZFS and system packages"
+    info "Installing $total packages..."
+    echo ""
     
-    if ! spinner $! "Installing Installing ZFS and system packages"; then
-        # This block runs if spinner returns non-zero
-        error "Installation failed: Check /tmp/package-install.log"
-        die "Aborting"
-    fi
+    for package in "${packages[@]}"; do
+        # Install with spinner
+        XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" "$package" &>/tmp/install-${package}.log &
+        
+        if ! spinner $! "Installing: $package"; then
+            failed_packages+=("$package")
+        fi
+    done
+    
+    echo ""
+    
+    # Report results
+    if [[ ${#failed_packages[@]} -eq 0 ]]; then
+        success "All $total packages installed successfully"
+        return 0
+    else
+        error "${#failed_packages[@]} package(s) failed to install:"
+        for pkg in "${failed_packages[@]}"; do
+            info "  - $pkg (log: /tmp/install-${pkg}.log)"
+        done
+        return 1
+    fi    
+
+#    XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" "${packages[@]}" &>/tmp/package-install.log &
+#    
+#    spinner $! "Installing Installing ZFS and system packages"
+#    
+#    if ! spinner $! "Installing Installing ZFS and system packages"; then
+#        # This block runs if spinner returns non-zero
+#        error "Installation failed: Check /tmp/package-install.log"
+#        die "Aborting"
+#    fi
 
     # Verify critical packages
     for pkg in zfs zfsbootmenu dracut; do
