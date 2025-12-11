@@ -212,7 +212,14 @@ fi
 
 # Detect if terminal supports UTF-8
 if [[ "${LANG:-}" =~ UTF-8 ]] && [[ -t 1 ]]; then
-    USE_UTF8_SYMBOLS=true
+    # Check if we're in a TTY (not a terminal emulator)
+    if [[ "$(tty)" =~ /dev/tty[0-9]+ ]]; then
+        # We're in a real TTY - UTF-8 support is limited
+        USE_UTF8_SYMBOLS=false
+    else
+        # We're in a terminal emulator - UTF-8 should work
+        USE_UTF8_SYMBOLS=true
+    fi
 else
     USE_UTF8_SYMBOLS=false
 fi
