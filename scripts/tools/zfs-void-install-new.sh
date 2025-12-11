@@ -809,7 +809,9 @@ phase_base_system_installation() {
     info "Installing Void Linux base system to ${INSTALLATION_MOUNTPOINT} (this may take a while)"
     XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" \
       base-system \
-      void-repo-nonfree
+      void-repo-nonfree &>/tmp/base-install.log &
+    
+    spinner $! "Installing base system"
     
     # Verify base system installation
     if [[ ! -f "${INSTALLATION_MOUNTPOINT}/usr/bin/xbps-install" ]]; then
@@ -846,7 +848,9 @@ phase_base_system_installation() {
       dracut
     )
     
-    XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" "${packages[@]}"
+    XBPS_ARCH=$ARCH xbps-install -y -S -r "${INSTALLATION_MOUNTPOINT}" -R "$REPO" "${packages[@]}" &>/tmp/package-install.log &
+    
+    spinner $! "Installing Installing ZFS and system packages"
     
     # Verify critical packages
     for pkg in zfs zfsbootmenu dracut; do
