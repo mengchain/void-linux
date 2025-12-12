@@ -1,163 +1,149 @@
 #!/usr/bin/env bash
-# filepath: zfs-health-check.sh
 # ZFS Health Check Script
-# Version: 3.3
-# Description: Comprehensive ZFS pool and dataset health monitoring with repair capabilities
-#
-# This script checks:
-# - Pool status and health
-# - Scrub status and errors
-# - Dataset quotas and usage
-# - Snapshot status
-# - I/O errors and checksums
-# - Fragmentation levels
-# - System configuration (hostid, cache, dracut, initramfs, ZFSBootMenu)
-# - Critical files in initramfs (pool keys, hostid)
-# - Boot filesystem configuration
-# - Pool encryption status
-#
-# Usage:
-#   sudo bash zfs-health-check.sh [options]
-#
-# Options:
-#   --pool <name>         Check specific pool (default: all pools)
-#   --repair              Enable automatic repair of configuration issues
-#   --verbose             Show detailed output
-#   --help                Show this help message
+# Version: 3.0
+# Date: 2025-12-12
+# 
+# Comprehensive health check for ZFS pools and system configuration
+# Validates against settings defined in zfs-setup.conf
+# Can automatically repair common issues
+
+set -euo pipefail
 
 # ============================================
-# Load Common Library
+# SCRIPT INITIALIZATION
 # ============================================
+
+# Determine script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="${LIB_DIR:-/usr/local/lib/zfs-scripts}"
 
-# Try to source common.sh from standard location
-if [[ -f "$LIB_DIR/common.sh" ]]; then
-    source "$LIB_DIR/common.sh"
-# Fallback: try relative to script location (for development)
-elif [[ -f "$SCRIPT_DIR/../lib/common.sh" ]]; then
-    source "$SCRIPT_DIR/../lib/common.sh"
-# Fallback: try same directory as script
-elif [[ -f "$SCRIPT_DIR/common.sh" ]]; then
-    source "$SCRIPT_DIR/common.sh"
+# Source required libraries
+if [[ -f "${SCRIPT_DIR}/common.sh" ]]; then
+    source "${SCRIPT_DIR}/common.sh"
+elif [[ -f "/usr/local/lib/zfs-scripts/common.sh" ]]; then
+    source "/usr/local/lib/zfs-scripts/common.sh"
 else
-    echo "ERROR: common.sh library not found!"
-    echo "Searched locations:"
-    echo "  - $LIB_DIR/common.sh"
-    echo "  - $SCRIPT_DIR/../lib/common.sh"
-    echo "  - $SCRIPT_DIR/common.sh"
+    echo "ERROR: common.sh not found" >&2
     exit 1
 fi
 
+# Source configuration helper functions
+if [[ -f "${SCRIPT_DIR}/zfs-setup-conf-helper.sh" ]]; then
+    source "${SCRIPT_DIR}/zfs-setup-conf-helper.sh"
+elif [[ -f "/usr/local/lib/zfs-scripts/zfs-setup-conf-helper.sh" ]]; then
+    source "/usr/local/lib/zfs-scripts/zfs-setup-conf-helper.sh"
+else
+    echo "ERROR: zfs-setup-conf-helper.sh not found" >&2
+    exit 1
+fi
 
-# Enable strict mode and error trapping
-set_strict_mode      # Sets: set -euo pipefail
-set_error_trap       # Traps ERR signal
-
-# ============================================
-# Load Configuration
-# ============================================
-load_config "zfs-setup.conf"
-
-# ============================================
-# Script Configuration
-# ============================================
-SCRIPT_NAME="zfs-health-check"
-SCRIPT_VERSION="3.3"
-LOG_FILE="${LOG_FILE:-/var/log/zfs-health-check.log}"
-USE_LOG_FILE=true
+# Validate configuration is loaded
+validate_config_loaded || {
+    error "Failed to load configuration"
+    exit 1
+}
 
 # ============================================
-# Global Variables
+# SCRIPT METADATA
 # ============================================
-REPAIR_MODE=false
-VERBOSE_MODE=false
-TARGET_POOL=""
-SNAPSHOT_ON_SUCCESS=false
 
-# Check counters
-declare -g CHECK_OK=0
-declare -g CHECK_WARN=0
-declare -g CHECK_ERROR=0
-
-# Issue tracking
-declare -gA POOL_ERRORS
-declare -gA POOL_WARNINGS
-declare -gA SYSTEM_ISSUES
-declare -gA SYSTEM_REPAIRS
-declare -gA BOOTFS_CANDIDATES
+readonly SCRIPT_VERSION="3.0"
+readonly SCRIPT_NAME="ZFS Health Check"
+readonly SCRIPT_DATE="2025-12-12"
 
 # ============================================
-# Utility Functions
+# SCRIPT OPTIONS
+# ============================================
+
+TARGET_POOL=""              # Specific pool to check (empty = all pools)
+REPAIR_MODE=false          # Auto-repair mode
+VERBOSE_MODE=false         # Verbose output
+SNAPSHOT_ON_SUCCESS=false  # Create snapshot if all checks pass
+DRY_RUN=false             # Show what would be repaired without doing it
+
+# ============================================
+# CHECK COUNTERS
+# ============================================
+
+CHECK_OK=0
+CHECK_WARN=0
+CHECK_ERROR=0
+
+# ============================================
+# ISSUE TRACKING
+# ============================================
+
+declare -A POOL_ERRORS=()
+declare -A POOL_WARNINGS=()
+declare -A SYSTEM_ISSUES=()
+declare -A SYSTEM_REPAIRS=()
+
+# ============================================
+# HELPER FUNCTIONS
 # ============================================
 
 increment_check() {
     local status="$1"
     case "$status" in
-        ok|success)
+        ok|OK)
             ((CHECK_OK++))
             ;;
-        warn|warning)
+        warn|WARN|warning)
             ((CHECK_WARN++))
             ;;
-        error|fail)
+        error|ERROR|critical)
             ((CHECK_ERROR++))
             ;;
     esac
 }
 
-get_pools() {
-    zpool list -H -o name 2>/dev/null || echo ""
-}
-
-get_pool_key_file() {
-    local pool="$1"
-    echo "/etc/zfs/${pool}.key"
-}
-
-get_all_pool_keys() {
-    local pools=("$@")
-    local keys=()
-    
-    for pool in "${pools[@]}"; do
-        local key_file="/etc/zfs/${pool}.key"
-        if [[ -f "$key_file" ]]; then
-            keys+=("$key_file")
-        fi
-    done
-    
-    echo "${keys[@]}"
-}
-
 show_usage() {
-    cat <<EOF
-ZFS Health Check Script v${SCRIPT_VERSION}
+    cat << EOF
+${SCRIPT_NAME} v${SCRIPT_VERSION}
 
 Usage: $(basename "$0") [OPTIONS]
 
-Options:
-  --pool <name>         Check specific pool only (default: all pools)
-  --repair              Enable automatic repair mode
-  --verbose             Show detailed output
-  --snapshot            Create snapshot on 100% success
-  --help                Show this help message
+OPTIONS:
+    --pool POOL         Check specific pool only
+    --repair            Automatically repair issues
+    --dry-run          Show what would be repaired without doing it
+    --verbose          Show detailed output
+    --snapshot         Create snapshot if all checks pass
+    --help             Show this help message
 
-Examples:
-  $(basename "$0")                    # Check all pools
-  $(basename "$0") --pool zroot       # Check specific pool
-  $(basename "$0") --repair           # Check and repair issues
-  $(basename "$0") --verbose          # Detailed output
-  $(basename "$0") --snapshot         # Create snapshot if all checks pass
+EXAMPLES:
+    # Check all pools
+    $(basename "$0")
+    
+    # Check specific pool with verbose output
+    $(basename "$0") --pool zroot --verbose
+    
+    # Check and auto-repair issues
+    $(basename "$0") --repair
+    
+    # Dry-run repair mode
+    $(basename "$0") --repair --dry-run
+
+CONFIGURATION:
+    This script uses settings from: zfs-setup.conf v${CONFIG_VERSION}
+    Configuration helper functions: zfs-setup-conf-helper.sh
+
+EXIT CODES:
+    0 - All checks passed
+    1 - Warnings found
+    2 - Errors found
+    3 - Script error
 
 EOF
 }
 
 # ============================================
-# Pool Health Check Functions
+# POOL HEALTH CHECK FUNCTIONS
 # ============================================
 
 check_pool_status() {
     local pool="$1"
+    
+    header "Pool Status: $pool"
     
     debug "Checking pool status: $pool"
     
@@ -166,58 +152,55 @@ check_pool_status() {
     
     case "$status" in
         ONLINE)
-            print_status "ok" "Pool status: ONLINE"
+            success "Pool is ONLINE"
             increment_check "ok"
             ;;
         DEGRADED)
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Pool is DEGRADED"
-            print_status "warn" "Pool status: DEGRADED"
+            warning "Pool is DEGRADED"
+            POOL_WARNINGS["$pool"]="DEGRADED"
             increment_check "warn"
             ;;
-        FAULTED|OFFLINE|UNAVAIL)
-            POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Pool is $status"
-            print_status "error" "Pool status: $status"
+        FAULTED|UNAVAIL)
+            error "Pool is $status"
+            POOL_ERRORS["$pool"]="$status"
             increment_check "error"
             ;;
         *)
-            POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Unknown pool status: $status"
-            print_status "error" "Pool status: $status"
+            error "Pool status unknown: $status"
+            POOL_ERRORS["$pool"]="UNKNOWN"
             increment_check "error"
             ;;
     esac
     
-    # Check for errors
-    local errors
-    errors=$(zpool status "$pool" | grep -E "errors:" | awk '{print $2}' || echo "")
-    
-    if [[ "$errors" == "No" ]] || [[ "$errors" == "0" ]]; then
-        print_status "ok" "No pool errors detected"
-        increment_check "ok"
-    else
-        POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Pool has errors: $errors"
-        print_status "error" "Pool errors detected: $errors"
-        increment_check "error"
+    # Show pool details if verbose
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        info "Pool details:"
+        zpool status "$pool" 2>/dev/null | sed 's/^/  /'
     fi
 }
 
 check_pool_capacity() {
     local pool="$1"
     
+    header "Pool Capacity: $pool"
+    
     debug "Checking pool capacity: $pool"
     
     local capacity
     capacity=$(zpool list -H -o capacity "$pool" 2>/dev/null | tr -d '%' || echo "0")
     
-    if [[ $capacity -ge ${CAPACITY_CRITICAL:-90} ]]; then
-        POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Capacity critical: ${capacity}%"
-        print_status "error" "Capacity: ${capacity}% (critical)"
+    info "Current capacity: ${capacity}%"
+    
+    if [[ $capacity -ge $CAPACITY_CRITICAL ]]; then
+        error "Capacity critical: ${capacity}% (threshold: ${CAPACITY_CRITICAL}%)"
+        POOL_ERRORS["${pool}_capacity"]="Critical: ${capacity}%"
         increment_check "error"
-    elif [[ $capacity -ge ${CAPACITY_WARNING:-80} ]]; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Capacity high: ${capacity}%"
-        print_status "warn" "Capacity: ${capacity}% (warning)"
+    elif [[ $capacity -ge $CAPACITY_WARNING ]]; then
+        warning "Capacity high: ${capacity}% (threshold: ${CAPACITY_WARNING}%)"
+        POOL_WARNINGS["${pool}_capacity"]="High: ${capacity}%"
         increment_check "warn"
     else
-        print_status "ok" "Capacity: ${capacity}%"
+        success "Capacity OK: ${capacity}%"
         increment_check "ok"
     fi
 }
@@ -225,103 +208,487 @@ check_pool_capacity() {
 check_pool_fragmentation() {
     local pool="$1"
     
+    header "Pool Fragmentation: $pool"
+    
     debug "Checking pool fragmentation: $pool"
     
     local frag
     frag=$(zpool list -H -o frag "$pool" 2>/dev/null | tr -d '%' || echo "0")
     
-    if [[ "$frag" == "-" ]]; then
-        print_status "info" "Fragmentation: N/A"
+    info "Current fragmentation: ${frag}%"
+    
+    if [[ $frag -ge $FRAGMENTATION_CRITICAL ]]; then
+        error "Fragmentation critical: ${frag}% (threshold: ${FRAGMENTATION_CRITICAL}%)"
+        POOL_ERRORS["${pool}_frag"]="Critical: ${frag}%"
+        increment_check "error"
+        info "Consider running: zpool scrub $pool"
+    elif [[ $frag -ge $FRAGMENTATION_WARNING ]]; then
+        warning "Fragmentation high: ${frag}% (threshold: ${FRAGMENTATION_WARNING}%)"
+        POOL_WARNINGS["${pool}_frag"]="High: ${frag}%"
+        increment_check "warn"
+    else
+        success "Fragmentation OK: ${frag}%"
+        increment_check "ok"
+    fi
+}
+
+check_pool_properties() {
+    local pool="$1"
+    
+    header "Pool Properties: $pool"
+    
+    debug "Checking pool properties: $pool"
+    
+    # Check ashift (from config: EXPECTED_POOL_PROPERTY_ASHIFT)
+    local ashift
+    ashift=$(zpool get -H -o value ashift "$pool" 2>/dev/null || echo "")
+    
+    if [[ "$ashift" == "$EXPECTED_POOL_PROPERTY_ASHIFT" ]]; then
+        success "ashift: $ashift (matches config)"
+        increment_check "ok"
+    else
+        warning "ashift: $ashift (expected: $EXPECTED_POOL_PROPERTY_ASHIFT from config)"
+        POOL_WARNINGS["${pool}_ashift"]="Mismatch: $ashift != $EXPECTED_POOL_PROPERTY_ASHIFT"
+        increment_check "warn"
+        info "Note: ashift cannot be changed after pool creation"
+    fi
+    
+    # Check autotrim (from config: EXPECTED_POOL_PROPERTY_AUTOTRIM)
+    local autotrim
+    autotrim=$(zpool get -H -o value autotrim "$pool" 2>/dev/null || echo "")
+    
+    if [[ "$autotrim" == "$EXPECTED_POOL_PROPERTY_AUTOTRIM" ]]; then
+        success "autotrim: $autotrim (matches config)"
+        increment_check "ok"
+    else
+        warning "autotrim: $autotrim (expected: $EXPECTED_POOL_PROPERTY_AUTOTRIM from config)"
+        POOL_WARNINGS["${pool}_autotrim"]="Mismatch: $autotrim != $EXPECTED_POOL_PROPERTY_AUTOTRIM"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_pool_property "$pool" "autotrim" "$EXPECTED_POOL_PROPERTY_AUTOTRIM"
+        fi
+    fi
+    
+    # Check cachefile (should be pool-specific from config pattern)
+    local expected_cachefile
+    expected_cachefile="$(get_pool_cache_file "$pool")"
+    
+    local cachefile
+    cachefile=$(zpool get -H -o value cachefile "$pool" 2>/dev/null || echo "")
+    
+    if [[ "$cachefile" == "$expected_cachefile" ]]; then
+        success "cachefile: $cachefile (matches config pattern)"
+        increment_check "ok"
+    else
+        warning "cachefile: $cachefile (expected: $expected_cachefile from config)"
+        POOL_WARNINGS["${pool}_cachefile"]="Mismatch"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_pool_property "$pool" "cachefile" "$expected_cachefile"
+        fi
+    fi
+}
+
+check_bootfs_property() {
+    local pool="$1"
+    
+    header "Bootfs Property: $pool"
+    
+    debug "Checking bootfs property: $pool"
+    
+    local bootfs
+    bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "-")
+    
+    if [[ "$bootfs" == "-" ]]; then
+        warning "No bootfs set for pool: $pool"
+        POOL_WARNINGS["${pool}_bootfs"]="Not set"
+        increment_check "warn"
+        info "This may be intentional for non-root pools"
+    else
+        success "bootfs: $bootfs"
+        increment_check "ok"
+        
+        # Verify bootfs dataset exists
+        if ! zfs list -H -o name "$bootfs" &>/dev/null; then
+            error "bootfs dataset does not exist: $bootfs"
+            POOL_ERRORS["${pool}_bootfs"]="Dataset missing"
+            increment_check "error"
+        fi
+    fi
+}
+
+check_pool_encryption() {
+    local pool="$1"
+    
+    header "Pool Encryption: $pool"
+    
+    debug "Checking pool encryption: $pool"
+    
+    # Check root dataset encryption
+    local encryption
+    encryption=$(zfs get -H -o value encryption "$pool" 2>/dev/null || echo "off")
+    
+    if [[ "$encryption" == "off" ]]; then
+        info "Pool is not encrypted"
         increment_check "ok"
         return 0
     fi
     
-    if [[ $frag -ge ${FRAGMENTATION_CRITICAL:-70} ]]; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; High fragmentation: ${frag}%"
-        print_status "warn" "Fragmentation: ${frag}% (critical)"
-        increment_check "warn"
-    elif [[ $frag -ge ${FRAGMENTATION_WARNING:-50} ]]; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Moderate fragmentation: ${frag}%"
-        print_status "warn" "Fragmentation: ${frag}% (warning)"
+    success "Encryption enabled: $encryption"
+    
+    # Verify encryption algorithm matches config
+    if [[ "$encryption" != "$ENCRYPTION_ALGORITHM" ]]; then
+        warning "Encryption algorithm: $encryption (expected: $ENCRYPTION_ALGORITHM from config)"
+        POOL_WARNINGS["${pool}_encryption_algo"]="Mismatch"
         increment_check "warn"
     else
-        print_status "ok" "Fragmentation: ${frag}%"
+        success "Encryption algorithm matches config: $ENCRYPTION_ALGORITHM"
         increment_check "ok"
     fi
+    
+    # Check key format (from config: KEY_FORMAT)
+    local keyformat
+    keyformat=$(zfs get -H -o value keyformat "$pool" 2>/dev/null || echo "")
+    
+    if [[ "$keyformat" != "$KEY_FORMAT" ]]; then
+        warning "Key format: $keyformat (expected: $KEY_FORMAT from config)"
+        POOL_WARNINGS["${pool}_keyformat"]="Mismatch"
+        increment_check "warn"
+    else
+        success "Key format matches config: $KEY_FORMAT"
+        increment_check "ok"
+    fi
+    
+    # Check key location (should match config pattern)
+    local expected_keylocation
+    expected_keylocation="$(get_pool_key_location "$pool")"
+    
+    local keylocation
+    keylocation=$(zfs get -H -o value keylocation "$pool" 2>/dev/null || echo "")
+    
+    if [[ "$keylocation" != "$expected_keylocation" ]]; then
+        warning "Key location: $keylocation (expected: $expected_keylocation from config)"
+        POOL_WARNINGS["${pool}_keylocation"]="Mismatch"
+        increment_check "warn"
+    else
+        success "Key location matches config pattern"
+        increment_check "ok"
+    fi
+    
+    # Check key file exists
+    local key_file
+    key_file="$(get_pool_key_file "$pool")"
+    
+    if [[ ! -f "$key_file" ]]; then
+        error "Key file not found: $key_file"
+        POOL_ERRORS["${pool}_keyfile"]="Missing"
+        increment_check "error"
+    else
+        success "Key file exists: $key_file"
+        increment_check "ok"
+        
+        # Check key file permissions (should be 000)
+        local perms
+        perms=$(stat -c "%a" "$key_file" 2>/dev/null || echo "")
+        
+        if [[ "$perms" != "000" ]]; then
+            error "Key file permissions: $perms (should be 000)"
+            POOL_ERRORS["${pool}_keyfile_perms"]="Insecure: $perms"
+            increment_check "error"
+            
+            if [[ "$REPAIR_MODE" == "true" ]]; then
+                repair_key_permissions "$key_file"
+            fi
+        else
+            success "Key file permissions correct: 000"
+            increment_check "ok"
+        fi
+    fi
+    
+    # Check key backup exists (from config: ZFS_KEY_BACKUP_DIR)
+    local backup_key="${ZFS_KEY_BACKUP_DIR}/$(basename "$key_file")"
+    
+    if [[ ! -f "$backup_key" ]]; then
+        warning "Key backup not found: $backup_key"
+        POOL_WARNINGS["${pool}_keybackup"]="Missing"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_key_backup "$key_file" "$backup_key"
+        fi
+    else
+        success "Key backup exists: $backup_key"
+        increment_check "ok"
+        
+        # Check backup permissions
+        local backup_perms
+        backup_perms=$(stat -c "%a" "$backup_key" 2>/dev/null || echo "")
+        
+        if [[ "$backup_perms" != "000" ]]; then
+            warning "Key backup permissions: $backup_perms (should be 000)"
+            POOL_WARNINGS["${pool}_keybackup_perms"]="Insecure"
+            increment_check "warn"
+            
+            if [[ "$REPAIR_MODE" == "true" ]]; then
+                repair_key_permissions "$backup_key"
+            fi
+        fi
+    fi
+    
+    # Check keystatus
+    local keystatus
+    keystatus=$(zfs get -H -o value keystatus "$pool" 2>/dev/null || echo "")
+    
+    case "$keystatus" in
+        available)
+            success "Key status: available"
+            increment_check "ok"
+            ;;
+        unavailable)
+            error "Key status: unavailable (key not loaded)"
+            POOL_ERRORS["${pool}_keystatus"]="Unavailable"
+            increment_check "error"
+            ;;
+        *)
+            warning "Key status unknown: $keystatus"
+            POOL_WARNINGS["${pool}_keystatus"]="Unknown"
+            increment_check "warn"
+            ;;
+    esac
 }
 
 check_scrub_status() {
     local pool="$1"
     
+    header "Scrub Status: $pool"
+    
     debug "Checking scrub status: $pool"
     
-    local scrub_status
-    scrub_status=$(zpool status "$pool" | grep -A 2 "scan:" || echo "")
+    local scrub_info
+    scrub_info=$(zpool status "$pool" 2>/dev/null | grep -A 2 "scan:" || echo "")
     
-    if [[ -z "$scrub_status" ]]; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; No scrub information"
-        print_status "warn" "No scrub information available"
+    if [[ -z "$scrub_info" ]]; then
+        warning "No scrub information available"
+        POOL_WARNINGS["${pool}_scrub"]="No info"
         increment_check "warn"
         return 0
     fi
     
-    # Check if scrub is in progress
-    if echo "$scrub_status" | grep -q "scrub in progress"; then
-        print_status "info" "Scrub in progress"
+    if echo "$scrub_info" | grep -q "scrub in progress"; then
+        info "Scrub currently in progress"
         increment_check "ok"
         return 0
     fi
     
-    # Check if resilver is in progress
-    if echo "$scrub_status" | grep -q "resilver in progress"; then
-        print_status "info" "Resilver in progress"
-        increment_check "ok"
+    if echo "$scrub_info" | grep -q "none requested"; then
+        warning "No scrub has been performed"
+        POOL_WARNINGS["${pool}_scrub"]="Never run"
+        increment_check "warn"
+        info "Run: zpool scrub $pool"
         return 0
     fi
     
-    # Check for scrub completed
-    if echo "$scrub_status" | grep -q "scrub repaired"; then
-        local repaired
-        repaired=$(echo "$scrub_status" | grep "scrub repaired" | awk '{print $3}')
+    # Extract scrub date
+    local scrub_date
+    scrub_date=$(echo "$scrub_info" | grep -oP '(?<=on ).*' | head -n1 || echo "")
+    
+    if [[ -n "$scrub_date" ]]; then
+        local scrub_epoch
+        scrub_epoch=$(date -d "$scrub_date" +%s 2>/dev/null || echo "0")
+        local now_epoch
+        now_epoch=$(date +%s)
+        local age_days=$(( (now_epoch - scrub_epoch) / 86400 ))
         
-        if [[ "$repaired" == "0B" ]] || [[ "$repaired" == "0" ]]; then
-            print_status "ok" "Last scrub: no repairs needed"
+        info "Last scrub: $scrub_date ($age_days days ago)"
+        
+        # Check against threshold from config: SCRUB_MAX_AGE_DAYS
+        if [[ $age_days -gt $SCRUB_MAX_AGE_DAYS ]]; then
+            warning "Scrub is overdue (> $SCRUB_MAX_AGE_DAYS days from config)"
+            POOL_WARNINGS["${pool}_scrub"]="Overdue: $age_days days"
+            increment_check "warn"
+            info "Run: zpool scrub $pool"
+        else
+            success "Scrub is current (< $SCRUB_MAX_AGE_DAYS days from config)"
+            increment_check "ok"
+        fi
+        
+        # Check for errors
+        if echo "$scrub_info" | grep -q "with 0 errors"; then
+            success "No errors found during scrub"
             increment_check "ok"
         else
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Last scrub repaired: $repaired"
-            print_status "warn" "Last scrub repaired: $repaired"
-            increment_check "warn"
+            error "Errors found during scrub!"
+            POOL_ERRORS["${pool}_scrub"]="Errors found"
+            increment_check "error"
         fi
     fi
+}
+
+check_dataset_properties() {
+    local dataset="$1"
     
-    # Check scrub age
-    if echo "$scrub_status" | grep -q "scrub completed"; then
-        local scrub_date
-        scrub_date=$(echo "$scrub_status" | grep "scrub completed" | sed -n 's/.*on \(.*\)/\1/p' || echo "")
+    debug "Checking dataset properties: $dataset"
+    
+    # Properties to check from config: EXPECTED_DATASET_PROPERTY_*
+    local properties=(
+        "acltype:$EXPECTED_DATASET_PROPERTY_ACLTYPE"
+        "compression:$EXPECTED_DATASET_PROPERTY_COMPRESSION"
+        "relatime:$EXPECTED_DATASET_PROPERTY_RELATIME"
+        "xattr:$EXPECTED_DATASET_PROPERTY_XATTR"
+        "dnodesize:$EXPECTED_DATASET_PROPERTY_DNODESIZE"
+        "normalization:$EXPECTED_DATASET_PROPERTY_NORMALIZATION"
+        "devices:$EXPECTED_DATASET_PROPERTY_DEVICES"
+    )
+    
+    local mismatches=0
+    
+    for prop_pair in "${properties[@]}"; do
+        local prop="${prop_pair%%:*}"
+        local expected="${prop_pair#*:}"
         
-        if [[ -n "$scrub_date" ]]; then
-            local scrub_epoch
-            scrub_epoch=$(date -d "$scrub_date" +%s 2>/dev/null || echo "0")
-            local current_epoch
-            current_epoch=$(date +%s)
-            local days_since_scrub=$(( (current_epoch - scrub_epoch) / 86400 ))
+        local actual
+        actual=$(zfs get -H -o value "$prop" "$dataset" 2>/dev/null || echo "")
+        
+        if [[ "$actual" != "$expected" ]]; then
+            warning "  $prop: $actual (expected: $expected from config)"
+            ((mismatches++))
             
-            if [[ $days_since_scrub -ge ${SCRUB_AGE_CRITICAL:-60} ]]; then
-                POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Last scrub: ${days_since_scrub} days ago"
-                print_status "warn" "Last scrub: ${days_since_scrub} days ago (critical)"
-                increment_check "warn"
-            elif [[ $days_since_scrub -ge ${SCRUB_AGE_WARNING:-30} ]]; then
-                POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Last scrub: ${days_since_scrub} days ago"
-                print_status "warn" "Last scrub: ${days_since_scrub} days ago (warning)"
-                increment_check "warn"
+            # Some properties can be changed
+            if [[ "$prop" =~ ^(acltype|compression|relatime|xattr|devices)$ ]]; then
+                if [[ "$REPAIR_MODE" == "true" ]]; then
+                    repair_dataset_property "$dataset" "$prop" "$expected"
+                fi
             else
-                print_status "ok" "Last scrub: ${days_since_scrub} days ago"
-                increment_check "ok"
+                info "  Note: $prop cannot be changed after dataset creation"
             fi
+        elif [[ "$VERBOSE_MODE" == "true" ]]; then
+            success "  $prop: $actual (matches config)"
         fi
-    elif echo "$scrub_status" | grep -q "none requested"; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; No scrub has been performed"
-        print_status "warn" "No scrub has been performed"
+    done
+    
+    if [[ $mismatches -eq 0 ]]; then
+        success "All dataset properties match config"
+        increment_check "ok"
+    else
+        warning "$mismatches property mismatch(es) found"
+        increment_check "warn"
+    fi
+}
+
+check_root_dataset_properties() {
+    local pool="$1"
+    
+    header "Root Dataset Properties: $pool"
+    
+    local bootfs
+    bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "-")
+    
+    if [[ "$bootfs" == "-" ]]; then
+        info "No bootfs set, skipping root dataset checks"
+        return 0
+    fi
+    
+    debug "Checking root dataset: $bootfs"
+    
+    # Check properties from config: EXPECTED_ROOT_PROPERTY_*
+    local properties=(
+        "mountpoint:$EXPECTED_ROOT_PROPERTY_MOUNTPOINT"
+        "canmount:$EXPECTED_ROOT_PROPERTY_CANMOUNT"
+        "recordsize:$EXPECTED_ROOT_PROPERTY_RECORDSIZE"
+        "atime:$EXPECTED_ROOT_PROPERTY_ATIME"
+        "relatime:$EXPECTED_ROOT_PROPERTY_RELATIME"
+    )
+    
+    local mismatches=0
+    
+    for prop_pair in "${properties[@]}"; do
+        local prop="${prop_pair%%:*}"
+        local expected="${prop_pair#*:}"
+        
+        local actual
+        actual=$(zfs get -H -o value "$prop" "$bootfs" 2>/dev/null || echo "")
+        
+        if [[ "$actual" != "$expected" ]]; then
+            warning "$prop: $actual (expected: $expected from config)"
+            ((mismatches++))
+            
+            # Canmount, atime, relatime can be changed
+            if [[ "$prop" =~ ^(canmount|atime|relatime)$ ]]; then
+                if [[ "$REPAIR_MODE" == "true" ]]; then
+                    repair_dataset_property "$bootfs" "$prop" "$expected"
+                fi
+            else
+                info "Note: $prop cannot be changed after dataset creation"
+            fi
+        else
+            success "$prop: $actual (matches config)"
+        fi
+    done
+    
+    if [[ $mismatches -eq 0 ]]; then
+        increment_check "ok"
+    else
+        increment_check "warn"
+    fi
+    
+    # Check base dataset properties
+    check_dataset_properties "$bootfs"
+}
+
+check_home_dataset_properties() {
+    local pool="$1"
+    
+    header "Home Dataset Properties: $pool"
+    
+    # Construct home dataset path: pool/DATA_CONTAINER/home
+    local home_dataset="${pool}/${DATA_CONTAINER}/home"
+    
+    if ! zfs list -H -o name "$home_dataset" &>/dev/null; then
+        info "Home dataset not found: $home_dataset"
+        return 0
+    fi
+    
+    debug "Checking home dataset: $home_dataset"
+    
+    # Check properties from config: EXPECTED_HOME_PROPERTY_*
+    local properties=(
+        "mountpoint:$EXPECTED_HOME_PROPERTY_MOUNTPOINT"
+        "recordsize:$EXPECTED_HOME_PROPERTY_RECORDSIZE"
+        "compression:$EXPECTED_HOME_PROPERTY_COMPRESSION"
+        "atime:$EXPECTED_HOME_PROPERTY_ATIME"
+    )
+    
+    local mismatches=0
+    
+    for prop_pair in "${properties[@]}"; do
+        local prop="${prop_pair%%:*}"
+        local expected="${prop_pair#*:}"
+        
+        local actual
+        actual=$(zfs get -H -o value "$prop" "$home_dataset" 2>/dev/null || echo "")
+        
+        if [[ "$actual" != "$expected" ]]; then
+            warning "$prop: $actual (expected: $expected from config)"
+            ((mismatches++))
+            
+            # Compression and atime can be changed
+            if [[ "$prop" =~ ^(compression|atime)$ ]]; then
+                if [[ "$REPAIR_MODE" == "true" ]]; then
+                    repair_dataset_property "$home_dataset" "$prop" "$expected"
+                fi
+            else
+                info "Note: $prop cannot be changed after dataset creation"
+            fi
+        else
+            success "$prop: $actual (matches config)"
+        fi
+    done
+    
+    if [[ $mismatches -eq 0 ]]; then
+        increment_check "ok"
+    else
         increment_check "warn"
     fi
 }
@@ -329,648 +696,736 @@ check_scrub_status() {
 check_dataset_quotas() {
     local pool="$1"
     
+    header "Dataset Quotas: $pool"
+    
     debug "Checking dataset quotas: $pool"
     
-    local datasets_with_quotas
-    datasets_with_quotas=$(zfs list -H -o name,quota,used -r "$pool" | awk '$2 != "-" && $2 != "none"' || echo "")
+    local datasets
+    datasets=$(zfs list -H -o name -r "$pool" 2>/dev/null || echo "")
     
-    if [[ -z "$datasets_with_quotas" ]]; then
-        print_status "info" "No quota limits configured"
-        increment_check "ok"
+    if [[ -z "$datasets" ]]; then
+        warning "No datasets found in pool"
+        increment_check "warn"
         return 0
     fi
     
-    local quota_issues=0
-    while IFS=$'\t' read -r dataset quota used; do
-        local quota_bytes
-        quota_bytes=$(numfmt --from=iec "$quota" 2>/dev/null || echo "0")
-        local used_bytes
-        used_bytes=$(numfmt --from=iec "$used" 2>/dev/null || echo "0")
-        
-        if [[ $quota_bytes -gt 0 ]]; then
-            local usage_percent=$(( used_bytes * 100 / quota_bytes ))
-            
-            if [[ $usage_percent -ge 95 ]]; then
-                POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Quota ${usage_percent}% on $dataset"
-                print_status "warn" "Dataset $dataset: ${usage_percent}% of quota"
-                ((quota_issues++))
-            fi
-        fi
-    done <<< "$datasets_with_quotas"
+    local quota_count=0
     
-    if [[ $quota_issues -eq 0 ]]; then
-        print_status "ok" "All quotas within limits"
-        increment_check "ok"
+    while IFS= read -r dataset; do
+        local quota
+        quota=$(zfs get -H -o value quota "$dataset" 2>/dev/null || echo "none")
+        
+        if [[ "$quota" != "none" ]]; then
+            info "Quota set on $dataset: $quota"
+            ((quota_count++))
+        fi
+    done <<< "$datasets"
+    
+    if [[ $quota_count -eq 0 ]]; then
+        info "No quotas configured"
     else
-        increment_check "warn"
+        success "Quotas configured on $quota_count dataset(s)"
     fi
+    
+    increment_check "ok"
 }
 
 check_snapshot_count() {
     local pool="$1"
     
-    debug "Checking snapshot count: $pool"
+    header "Snapshot Counts: $pool"
+    
+    debug "Checking snapshot counts: $pool"
     
     local datasets
-    datasets=$(zfs list -H -o name -r "$pool" -t filesystem,volume 2>/dev/null || echo "")
+    datasets=$(zfs list -H -o name -r "$pool" 2>/dev/null || echo "")
     
     if [[ -z "$datasets" ]]; then
-        print_status "info" "No datasets found"
-        increment_check "ok"
+        warning "No datasets found in pool"
+        increment_check "warn"
         return 0
     fi
     
-    local excessive_snapshots=0
-    local max_snapshots=${MAX_SNAPSHOTS_PER_DATASET:-1000}
+    local excessive_count=0
     
     while IFS= read -r dataset; do
-        local snapshot_count
-        snapshot_count=$(zfs list -H -o name -t snapshot -r "$dataset" 2>/dev/null | wc -l || echo "0")
+        local snap_count
+        snap_count=$(zfs list -t snapshot -H -o name -r "$dataset" 2>/dev/null | wc -l || echo "0")
         
-        if [[ $snapshot_count -gt $max_snapshots ]]; then
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Excessive snapshots on $dataset: $snapshot_count"
-            print_status "warn" "Dataset $dataset: $snapshot_count snapshots (exceeds $max_snapshots)"
-            ((excessive_snapshots++))
+        # Check against threshold from config: MAX_SNAPSHOTS_PER_DATASET
+        if [[ $snap_count -gt $MAX_SNAPSHOTS_PER_DATASET ]]; then
+            warning "$dataset: $snap_count snapshots (> $MAX_SNAPSHOTS_PER_DATASET from config)"
+            ((excessive_count++))
+        elif [[ "$VERBOSE_MODE" == "true" ]] && [[ $snap_count -gt 0 ]]; then
+            info "$dataset: $snap_count snapshots"
         fi
     done <<< "$datasets"
     
-    if [[ $excessive_snapshots -eq 0 ]]; then
-        print_status "ok" "Snapshot counts within limits"
+    if [[ $excessive_count -eq 0 ]]; then
+        success "All datasets have reasonable snapshot counts"
         increment_check "ok"
     else
+        warning "$excessive_count dataset(s) have excessive snapshots"
         increment_check "warn"
+        info "Consider pruning old snapshots"
     fi
 }
 
-check_pool_features() {
+check_dataset_structure() {
     local pool="$1"
     
-    debug "Checking pool features: $pool"
+    header "Dataset Structure: $pool"
     
-    # Check for unsupported features
-    local unsupported
-    unsupported=$(zpool get -H all "$pool" | grep "feature@" | grep "unsupported" || echo "")
+    debug "Checking dataset structure: $pool"
     
-    if [[ -n "$unsupported" ]]; then
-        POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Unsupported features detected"
-        print_status "error" "Unsupported features detected"
-        increment_check "error"
-    else
-        print_status "ok" "All features supported"
-        increment_check "ok"
-    fi
-}
-
-check_pool_encryption() {
-    local pool="$1"
-    
-    debug "Checking pool encryption: $pool"
-    
-    # Check if pool/datasets are encrypted
-    local encrypted_datasets
-    encrypted_datasets=$(zfs get -H -o name,value encryption -r "$pool" | grep -v "off$" | grep -v "^encryption" || echo "")
-    
-    if [[ -z "$encrypted_datasets" ]]; then
-        print_status "info" "Pool has no encryption"
-        increment_check "ok"
-        return 0
-    fi
-    
-    # Count encrypted datasets
-    local encrypted_count
-    encrypted_count=$(echo "$encrypted_datasets" | wc -l)
-    print_status "info" "Encrypted datasets: $encrypted_count"
-    
-    # Check encryption algorithm on pool root
-    local encryption_algo
-    encryption_algo=$(zfs get -H -o value encryption "$pool" 2>/dev/null || echo "")
-    
-    if [[ "$encryption_algo" == "aes-256-gcm" ]]; then
-        print_status "ok" "Encryption: $encryption_algo"
-        increment_check "ok"
-    elif [[ "$encryption_algo" != "off" ]] && [[ -n "$encryption_algo" ]] && [[ "$encryption_algo" != "-" ]]; then
-        POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Weak encryption: $encryption_algo"
-        print_status "warn" "Encryption: $encryption_algo (consider aes-256-gcm)"
+    # Check for ROOT container (from config: ROOT_CONTAINER)
+    local root_container="${pool}/${ROOT_CONTAINER}"
+    if ! zfs list -H -o name "$root_container" &>/dev/null; then
+        warning "ROOT container not found: $root_container (expected from config)"
+        POOL_WARNINGS["${pool}_structure"]="Missing ROOT container"
         increment_check "warn"
     else
-        # Check child datasets
-        local has_aes256gcm=false
-        while IFS=$'\t' read -r dataset algo; do
-            if [[ "$algo" == "aes-256-gcm" ]]; then
-                has_aes256gcm=true
-                break
-            fi
-        done <<< "$encrypted_datasets"
-        
-        if [[ "$has_aes256gcm" == true ]]; then
-            print_status "ok" "Encryption: aes-256-gcm (on datasets)"
-            increment_check "ok"
-        fi
-    fi
-    
-    # Check key file
-    local key_file="/etc/zfs/${pool}.key"
-    if [[ -f "$key_file" ]]; then
-        # Check permissions (should be 000)
-        local perms
-        perms=$(stat -c "%a" "$key_file")
-        if [[ "$perms" == "000" ]]; then
-            print_status "ok" "Key file permissions: $perms"
-            increment_check "ok"
-        else
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Key file permissions: $perms (should be 000)"
-            print_status "warn" "Key file permissions: $perms (should be 000)"
-            increment_check "warn"
-        fi
-        
-        # Check key file is not empty
-        if [[ ! -s "$key_file" ]]; then
-            POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Key file is empty: $key_file"
-            print_status "error" "Key file is empty: $key_file"
-            increment_check "error"
-        fi
-    else
-        if [[ -n "$encrypted_datasets" ]]; then
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Key file missing: $key_file"
-            print_status "warn" "Key file missing: $key_file"
-            increment_check "warn"
-        fi
-    fi
-    
-    return 0
-}
-
-check_bootfs_property() {
-    local pool="$1"
-    
-    debug "Checking bootfs property: $pool"
-    
-    local has_issue=false
-    
-    # Get bootfs property
-    local bootfs
-    bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "")
-    
-    # Check if bootfs is set
-    if [[ -z "$bootfs" ]] || [[ "$bootfs" == "-" ]]; then
-        # Try to find a likely boot dataset
-        local root_datasets
-        root_datasets=$(zfs list -H -o name,mountpoint -r "$pool" | grep -E '\s/$' | awk '{print $1}')
-        
-        if [[ -n "$root_datasets" ]]; then
-            local dataset_count
-            dataset_count=$(echo "$root_datasets" | wc -l)
-            
-            if [[ $dataset_count -eq 1 ]]; then
-                POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; No bootfs set but found root dataset: $root_datasets"
-                print_status "warn" "No bootfs set (found candidate: $root_datasets)"
-                increment_check "warn"
-                has_issue=true
-                
-                # Store candidate for repair
-                BOOTFS_CANDIDATES["$pool"]="$root_datasets"
-            else
-                POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; No bootfs set, multiple root candidates found"
-                print_status "warn" "No bootfs set (multiple candidates found)"
-                increment_check "warn"
-                has_issue=true
-            fi
-        else
-            print_status "info" "No bootfs property set (not a boot pool)"
-            increment_check "ok"
-        fi
-        
-        return $([ "$has_issue" = true ] && echo 1 || echo 0)
-    fi
-    
-    print_status "info" "Bootfs dataset: $bootfs"
-    
-    # Verify bootfs dataset exists
-    if ! zfs list "$bootfs" &>/dev/null; then
-        POOL_ERRORS["$pool"]="${POOL_ERRORS[$pool]:-}; Bootfs dataset does not exist: $bootfs"
-        print_status "error" "Bootfs dataset does not exist: $bootfs"
-        increment_check "error"
-        return 1
-    fi
-    
-    # Check mountpoint
-    local mountpoint
-    mountpoint=$(zfs get -H -o value mountpoint "$bootfs" 2>/dev/null || echo "")
-    
-    case "$mountpoint" in
-        "/")
-            print_status "ok" "Bootfs mountpoint: / (root filesystem)"
-            increment_check "ok"
-            ;;
-        "none")
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Bootfs mountpoint is 'none' (should be /)"
-            print_status "warn" "Bootfs mountpoint: none (should be /)"
-            increment_check "warn"
-            has_issue=true
-            ;;
-        *)
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Bootfs mountpoint: $mountpoint (expected /)"
-            print_status "warn" "Bootfs mountpoint: $mountpoint (expected /)"
-            increment_check "warn"
-            has_issue=true
-            ;;
-    esac
-    
-    # Check canmount property
-    local canmount
-    canmount=$(zfs get -H -o value canmount "$bootfs" 2>/dev/null || echo "")
-    
-    case "$canmount" in
-        "noauto")
-            print_status "ok" "Bootfs canmount: noauto (correct for boot environments)"
-            increment_check "ok"
-            ;;
-        "on")
-            print_status "info" "Bootfs canmount: on"
-            increment_check "ok"
-            ;;
-        *)
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Bootfs canmount: $canmount (should be noauto or on)"
-            print_status "warn" "Bootfs canmount: $canmount"
-            increment_check "warn"
-            has_issue=true
-            ;;
-    esac
-    
-    # Check if currently booted from this dataset
-    if mountpoint -q /; then
-        local current_root
-        current_root=$(df --output=source / 2>/dev/null | tail -n1)
-        
-        if [[ "$current_root" == "$bootfs" ]]; then
-            print_status "ok" "Currently booted from: $bootfs ✓"
-            increment_check "ok"
-        else
-            print_status "info" "Currently booted from: $current_root (bootfs: $bootfs)"
-            increment_check "ok"
-        fi
-    fi
-    
-    # Check ZFSBootMenu properties
-    local zbm_cmdline
-    zbm_cmdline=$(zfs get -H -o value org.zfsbootmenu:commandline "$bootfs" 2>/dev/null || echo "")
-    
-    if [[ -n "$zbm_cmdline" ]] && [[ "$zbm_cmdline" != "-" ]]; then
-        # Validate cmdline contains expected parameters
-        local expected_params=("ro" "quiet")
-        local missing_params=()
-        
-        for param in "${expected_params[@]}"; do
-            if [[ "$zbm_cmdline" != *"$param"* ]]; then
-                missing_params+=("$param")
-            fi
-        done
-        
-        if [[ ${#missing_params[@]} -eq 0 ]]; then
-            print_status "ok" "ZFSBootMenu cmdline: $zbm_cmdline"
-            increment_check "ok"
-        else
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; ZFSBootMenu cmdline missing: ${missing_params[*]}"
-            print_status "warn" "ZFSBootMenu cmdline missing: ${missing_params[*]}"
-            increment_check "warn"
-            has_issue=true
-        fi
-    else
-        # Only warn if this is actually a boot pool
-        if [[ "$mountpoint" == "/" ]]; then
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; No ZFSBootMenu commandline property"
-            print_status "warn" "No ZFSBootMenu commandline property set"
-            increment_check "warn"
-            has_issue=true
-        else
-            print_status "info" "No ZFSBootMenu commandline (not a boot dataset)"
-            increment_check "ok"
-        fi
-    fi
-    
-    # Check for encryption if dataset should be encrypted
-    local encryption
-    encryption=$(zfs get -H -o value encryption "$bootfs" 2>/dev/null || echo "")
-    
-    if [[ "$encryption" == "off" ]]; then
-        print_status "info" "Bootfs encryption: off"
+        success "ROOT container exists: $root_container"
         increment_check "ok"
-    else
-        print_status "ok" "Bootfs encryption: $encryption"
-        increment_check "ok"
-        
-        # Verify key is loaded
-        local keystatus
-        keystatus=$(zfs get -H -o value keystatus "$bootfs" 2>/dev/null || echo "")
-        
-        if [[ "$keystatus" == "available" ]]; then
-            print_status "ok" "Encryption key: available"
-            increment_check "ok"
-        else
-            POOL_WARNINGS["$pool"]="${POOL_WARNINGS[$pool]:-}; Encryption key not available"
-            print_status "warn" "Encryption key: $keystatus"
-            increment_check "warn"
-            has_issue=true
-        fi
     fi
     
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
+    # Check for data container (from config: DATA_CONTAINER)
+    local data_container="${pool}/${DATA_CONTAINER}"
+    if ! zfs list -H -o name "$data_container" &>/dev/null; then
+        info "Data container not found: $data_container (optional)"
+    else
+        success "Data container exists: $data_container"
+        increment_check "ok"
+    fi
 }
 
 # ============================================
-# System Configuration Check Functions
+# SYSTEM CONFIGURATION CHECK FUNCTIONS
 # ============================================
 
 check_hostid() {
-    subheader "Checking System Hostid"
+    header "System: Hostid"
     
-    local has_issue=false
+    debug "Checking system hostid from config: $ZFS_HOSTID_FILE"
     
-    if [[ ! -f /etc/hostid ]]; then
-        SYSTEM_ISSUES["hostid"]="Hostid file missing: /etc/hostid"
-        print_status "error" "Hostid file missing"
+    if [[ ! -f "$ZFS_HOSTID_FILE" ]]; then
+        error "Hostid file not found: $ZFS_HOSTID_FILE (from config)"
+        SYSTEM_ISSUES["hostid"]="Missing"
         increment_check "error"
-        has_issue=true
-    else
-        local hostid_size
-        hostid_size=$(stat -c%s /etc/hostid 2>/dev/null || echo "0")
         
-        if [[ $hostid_size -ne 4 ]]; then
-            SYSTEM_ISSUES["hostid"]="Hostid file corrupted (wrong size: $hostid_size bytes)"
-            print_status "error" "Hostid file corrupted"
-            increment_check "error"
-            has_issue=true
-        else
-            local hostid_value
-            hostid_value=$(hostid 2>/dev/null || echo "")
-            print_status "ok" "Hostid: $hostid_value"
-            increment_check "ok"
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_hostid
         fi
+        return 1
     fi
     
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
+    # Check file size (must be exactly 4 bytes)
+    local size
+    size=$(stat -c %s "$ZFS_HOSTID_FILE" 2>/dev/null || echo "0")
+    if [[ "$size" != "4" ]]; then
+        error "Hostid file has incorrect size: $size bytes (should be 4)"
+        SYSTEM_ISSUES["hostid"]="Invalid size"
+        increment_check "error"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_hostid
+        fi
+        return 1
+    fi
+    
+    # Verify hostid matches current system
+    local file_hostid current_hostid
+    file_hostid=$(od -An -tx4 "$ZFS_HOSTID_FILE" | tr -d ' ' 2>/dev/null || echo "")
+    current_hostid=$(hostid 2>/dev/null || echo "")
+    
+    if [[ "$file_hostid" != "$current_hostid" ]]; then
+        warning "Hostid mismatch: file=$file_hostid, current=$current_hostid"
+        SYSTEM_ISSUES["hostid"]="Mismatch"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_hostid
+        fi
+    else
+        success "Hostid OK: $current_hostid"
+        increment_check "ok"
+    fi
 }
 
 check_zpool_cache() {
-    subheader "Checking ZPool Cache"
+    header "System: ZPool Cache Files"
     
-    local has_issue=false
+    debug "Checking zpool cache files"
     
-    if [[ ! -f /etc/zfs/zpool.cache ]]; then
-        SYSTEM_ISSUES["cache"]="Pool cache missing: /etc/zfs/zpool.cache"
-        print_status "warn" "Pool cache missing"
-        increment_check "warn"
-        has_issue=true
-    else
-        if [[ ! -s /etc/zfs/zpool.cache ]]; then
-            SYSTEM_ISSUES["cache"]="Pool cache is empty"
-            print_status "warn" "Pool cache is empty"
-            increment_check "warn"
-            has_issue=true
+    local pools
+    IFS=' ' read -ra pools <<< "$(get_pools)"
+    
+    local cache_issues=0
+    
+    for pool in "${pools[@]}"; do
+        local cache_file
+        cache_file="$(get_pool_cache_file "$pool")"
+        
+        debug "Checking cache file: $cache_file (from config pattern)"
+        
+        if [[ ! -f "$cache_file" ]]; then
+            error "Pool cache file not found: $cache_file"
+            SYSTEM_ISSUES["cache_$pool"]="Missing"
+            ((cache_issues++))
+            increment_check "error"
+            
+            if [[ "$REPAIR_MODE" == "true" ]]; then
+                repair_zpool_cache "$pool"
+            fi
         else
-            print_status "ok" "Pool cache exists"
+            success "Pool cache file exists: $cache_file"
             increment_check "ok"
+            
+            # Check permissions (should be 644)
+            local perms
+            perms=$(stat -c "%a" "$cache_file" 2>/dev/null || echo "")
+            if [[ "$perms" != "644" ]]; then
+                warning "Cache file permissions: $perms (should be 644)"
+                SYSTEM_ISSUES["cache_${pool}_perms"]="Incorrect: $perms"
+                increment_check "warn"
+                
+                if [[ "$REPAIR_MODE" == "true" ]]; then
+                    repair_cache_permissions "$cache_file"
+                fi
+            fi
         fi
-    fi
+    done
     
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
+    if [[ $cache_issues -eq 0 ]]; then
+        success "All pool cache files OK"
+    fi
 }
 
 check_dracut_config() {
-    subheader "Checking Dracut Configuration"
+    header "System: Dracut Configuration"
     
-    local has_issue=false
-    local pools
-    pools=$(get_pools) || return 1
+    debug "Checking dracut configuration from config paths"
     
-    # Check dracut config directory
-    if [[ ! -d "$DRACUT_CONF_DIR" ]]; then
-        SYSTEM_ISSUES["dracut"]="Dracut config directory missing: $DRACUT_CONF_DIR"
-        print_status "error" "Dracut config directory missing"
-        increment_check "error"
-        has_issue=true
-        return 1
-    fi
-    
-    # Check main dracut config
+    # Check main dracut.conf (from config: DRACUT_CONF)
     if [[ ! -f "$DRACUT_CONF" ]]; then
-        SYSTEM_ISSUES["dracut"]="${SYSTEM_ISSUES[dracut]:-}; Main dracut.conf missing"
-        print_status "warn" "Main dracut.conf missing"
-        increment_check "warn"
-        has_issue=true
-    fi
-    
-    # Check ZFS-specific config
-    if [[ -f "$DRACUT_ZFS_CONF" ]]; then
-        local dracut_content
-        dracut_content=$(cat "$DRACUT_ZFS_CONF")
+        error "Main dracut config not found: $DRACUT_CONF (from config)"
+        SYSTEM_ISSUES["dracut_conf"]="Missing"
+        increment_check "error"
         
-        # Check for ZFS module
-        if [[ "$dracut_content" != *"add_dracutmodules"*"zfs"* ]]; then
-            SYSTEM_ISSUES["dracut"]="${SYSTEM_ISSUES[dracut]:-}; ZFS module not configured"
-            print_status "warn" "ZFS module not in dracut config"
-            has_issue=true
-        fi
-        
-        # Check install_items exists
-        if [[ "$dracut_content" != *"install_items"* ]]; then
-            SYSTEM_ISSUES["dracut"]="${SYSTEM_ISSUES[dracut]:-}; install_items not configured"
-            print_status "warn" "install_items not configured"
-            has_issue=true
-        else
-            # Check hostid
-            if [[ "$dracut_content" != *"/etc/hostid"* ]]; then
-                SYSTEM_ISSUES["dracut"]="${SYSTEM_ISSUES[dracut]:-}; hostid not in install_items"
-                print_status "warn" "hostid not in install_items"
-                has_issue=true
-            fi
-            
-            # Check for pool key files
-            local missing_keys=()
-            while IFS= read -r pool; do
-                local key_file="/etc/zfs/${pool}.key"
-                if [[ -f "$key_file" ]]; then
-                    if [[ "$dracut_content" != *"$key_file"* ]]; then
-                        missing_keys+=("$key_file")
-                    fi
-                fi
-            done <<< "$pools"
-            
-            if [[ ${#missing_keys[@]} -gt 0 ]]; then
-                SYSTEM_ISSUES["dracut"]="${SYSTEM_ISSUES[dracut]:-}; Missing keys: ${missing_keys[*]}"
-                print_status "warn" "Pool keys not in install_items: ${missing_keys[*]}"
-                has_issue=true
-            else
-                print_status "ok" "All pool keys in install_items"
-            fi
-        fi
-        
-        if [[ "$has_issue" == false ]]; then
-            print_status "ok" "Dracut ZFS config valid"
-            increment_check "ok"
-        else
-            increment_check "warn"
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_dracut_main_config
         fi
     else
-        SYSTEM_ISSUES["dracut"]="ZFS dracut config missing: $DRACUT_ZFS_CONF"
-        print_status "error" "ZFS dracut config missing"
-        increment_check "error"
-        has_issue=true
+        success "Main dracut config exists: $DRACUT_CONF"
+        increment_check "ok"
+        
+        # Validate content against template
+        validate_dracut_main_content
     fi
     
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
+    # Check ZFS dracut config (from config: DRACUT_ZFS_CONF)
+    if [[ ! -f "$DRACUT_ZFS_CONF" ]]; then
+        error "ZFS dracut config not found: $DRACUT_ZFS_CONF (from config)"
+        SYSTEM_ISSUES["dracut_zfs_conf"]="Missing"
+        increment_check "error"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_dracut_zfs_config
+        fi
+    else
+        success "ZFS dracut config exists: $DRACUT_ZFS_CONF"
+        increment_check "ok"
+        
+        # Validate content
+        validate_dracut_zfs_content
+    fi
+}
+
+validate_dracut_main_content() {
+    debug "Validating dracut main config content"
+    
+    # Check for required settings from template
+    local required_settings=(
+        'hostonly="yes"'
+        'compress="zstd"'
+        'early_microcode="yes"'
+    )
+    
+    local missing=0
+    for setting in "${required_settings[@]}"; do
+        if ! grep -qF "$setting" "$DRACUT_CONF" 2>/dev/null; then
+            warning "Missing setting in $DRACUT_CONF: $setting"
+            ((missing++))
+        fi
+    done
+    
+    if [[ $missing -gt 0 ]]; then
+        SYSTEM_ISSUES["dracut_conf_content"]="Incomplete: $missing settings"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_dracut_main_config
+        fi
+    else
+        success "Dracut main config content validated"
+        increment_check "ok"
+    fi
+}
+
+validate_dracut_zfs_content() {
+    debug "Validating dracut ZFS config content"
+    
+    local pools
+    IFS=' ' read -ra pools <<< "$(get_pools)"
+    
+    # Check that hostid is in install_items (from config: ZFS_HOSTID_FILE)
+    if ! grep -qF "$ZFS_HOSTID_FILE" "$DRACUT_ZFS_CONF" 2>/dev/null; then
+        warning "Hostid not in dracut config: $ZFS_HOSTID_FILE"
+        SYSTEM_ISSUES["dracut_hostid"]="Not included"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_dracut_zfs_config
+        fi
+    fi
+    
+    # Check that pool keys are in install_items
+    local missing_keys=0
+    for pool in "${pools[@]}"; do
+        local key_file
+        key_file="$(get_pool_key_file "$pool")"
+        
+        if [[ -f "$key_file" ]]; then
+            if ! grep -qF "$key_file" "$DRACUT_ZFS_CONF" 2>/dev/null; then
+                warning "Pool key not in dracut config: $key_file"
+                SYSTEM_ISSUES["dracut_key_$pool"]="Not included"
+                ((missing_keys++))
+                increment_check "warn"
+            fi
+        fi
+    done
+    
+    if [[ $missing_keys -gt 0 ]] && [[ "$REPAIR_MODE" == "true" ]]; then
+        repair_dracut_zfs_config
+    fi
+    
+    if [[ $missing_keys -eq 0 ]]; then
+        success "All pool keys in dracut config"
+        increment_check "ok"
+    fi
 }
 
 check_initramfs() {
-    subheader "Checking Initramfs"
+    header "System: Initramfs"
     
-    local has_issue=false
-    local pools
-    pools=$(get_pools) || return 1
+    debug "Checking initramfs from config: $INITRAMFS_DIR"
     
-    # Find initramfs images
-    local initramfs_images
-    initramfs_images=$(find /boot -name "initramfs-*.img" 2>/dev/null || echo "")
+    local kernel_version
+    kernel_version=$(uname -r)
     
-    if [[ -z "$initramfs_images" ]]; then
-        SYSTEM_ISSUES["initramfs"]="No initramfs images found in /boot"
-        print_status "error" "No initramfs found"
+    local initramfs_file="${INITRAMFS_DIR}/initramfs-${kernel_version}.img"
+    
+    if [[ ! -f "$initramfs_file" ]]; then
+        error "Initramfs not found: $initramfs_file"
+        SYSTEM_ISSUES["initramfs"]="Missing"
         increment_check "error"
-        has_issue=true
-    else
-        local image_count
-        image_count=$(echo "$initramfs_images" | wc -l)
-        info "Found $image_count initramfs image(s)"
         
-        # Check each image
-        while IFS= read -r img; do
-            local img_name
-            img_name=$(basename "$img")
-            
-            if command_exists lsinitrd; then
-                local initrd_content
-                initrd_content=$(lsinitrd "$img" 2>/dev/null || echo "")
-                
-                # Check ZFS module
-                if [[ "$initrd_content" == *"zfs.ko"* ]]; then
-                    print_status "ok" "$img_name contains ZFS module"
-                else
-                    SYSTEM_ISSUES["initramfs"]="${SYSTEM_ISSUES[initramfs]:-}; $img_name missing ZFS module"
-                    print_status "error" "$img_name missing ZFS module"
-                    increment_check "error"
-                    has_issue=true
-                    continue
-                fi
-                
-                # Check hostid
-                if [[ "$initrd_content" == *"etc/hostid"* ]]; then
-                    print_status "ok" "$img_name contains hostid"
-                    increment_check "ok"
-                else
-                    SYSTEM_ISSUES["initramfs"]="${SYSTEM_ISSUES[initramfs]:-}; $img_name missing hostid"
-                    print_status "warn" "$img_name missing hostid"
-                    increment_check "warn"
-                    has_issue=true
-                fi
-                
-                # Check for pool keys
-                local missing_keys=()
-                while IFS= read -r pool; do
-                    local key_path="etc/zfs/${pool}.key"
-                    if [[ -f "/etc/zfs/${pool}.key" ]]; then
-                        if [[ "$initrd_content" != *"$key_path"* ]]; then
-                            missing_keys+=("${pool}.key")
-                        fi
-                    fi
-                done <<< "$pools"
-                
-                if [[ ${#missing_keys[@]} -gt 0 ]]; then
-                    SYSTEM_ISSUES["initramfs"]="${SYSTEM_ISSUES[initramfs]:-}; $img_name missing keys: ${missing_keys[*]}"
-                    print_status "warn" "$img_name missing keys: ${missing_keys[*]}"
-                    increment_check "warn"
-                    has_issue=true
-                else
-                    print_status "ok" "$img_name contains all pool keys"
-                fi
-            else
-                print_status "info" "Cannot verify $img_name (lsinitrd not available)"
-                increment_check "ok"
-            fi
-        done <<< "$initramfs_images"
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_initramfs
+        fi
+        return 1
     fi
     
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
+    success "Initramfs exists: $initramfs_file"
+    increment_check "ok"
+    
+    # Check initramfs age vs kernel
+    local initramfs_age kernel_age
+    initramfs_age=$(stat -c %Y "$initramfs_file" 2>/dev/null || echo "0")
+    kernel_age=$(stat -c %Y "/boot/vmlinuz-${kernel_version}" 2>/dev/null || echo "0")
+    
+    if [[ $initramfs_age -lt $kernel_age ]]; then
+        warning "Initramfs is older than kernel"
+        SYSTEM_ISSUES["initramfs_age"]="Outdated"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_initramfs
+        fi
+    fi
+    
+    # Verify critical files in initramfs
+    verify_initramfs_contents "$initramfs_file"
+}
+
+verify_initramfs_contents() {
+    local initramfs_file="$1"
+    
+    info "Verifying initramfs contents..."
+    
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    
+    # Extract initramfs
+    if ! (cd "$temp_dir" && zcat "$initramfs_file" 2>/dev/null | cpio -id 2>/dev/null); then
+        warning "Failed to extract initramfs for inspection"
+        rm -rf "$temp_dir"
+        return 0
+    fi
+    
+    local verification_failed=false
+    
+    # Check for hostid (from config: ZFS_HOSTID_FILE)
+    if [[ ! -f "$temp_dir${ZFS_HOSTID_FILE}" ]]; then
+        error "Hostid not found in initramfs: $ZFS_HOSTID_FILE"
+        SYSTEM_ISSUES["initramfs_hostid"]="Missing"
+        verification_failed=true
+        increment_check "error"
+    else
+        success "Hostid found in initramfs"
+        increment_check "ok"
+    fi
+    
+    # Check for pool keys
+    local pools
+    IFS=' ' read -ra pools <<< "$(get_pools)"
+    
+    local missing_keys=0
+    for pool in "${pools[@]}"; do
+        local key_file
+        key_file="$(get_pool_key_file "$pool")"
+        
+        if [[ -f "$key_file" ]]; then
+            if [[ ! -f "$temp_dir${key_file}" ]]; then
+                error "Pool key not found in initramfs: $key_file"
+                SYSTEM_ISSUES["initramfs_key_$pool"]="Missing"
+                ((missing_keys++))
+                verification_failed=true
+                increment_check "error"
+            else
+                success "Pool key found in initramfs: $key_file"
+                increment_check "ok"
+            fi
+        fi
+    done
+    
+    rm -rf "$temp_dir"
+    
+    if [[ "$verification_failed" == "true" ]] && [[ "$REPAIR_MODE" == "true" ]]; then
+        repair_initramfs
+    fi
 }
 
 check_zfsbootmenu() {
-    subheader "Checking ZFSBootMenu"
+    header "System: ZFSBootMenu"
     
-    local has_issue=false
+    debug "Checking ZFSBootMenu configuration"
     
     # Check if ZFSBootMenu is installed
-    if ! command_exists generate-zbm; then
-        SYSTEM_ISSUES["zbm"]="ZFSBootMenu not installed"
-        print_status "warn" "ZFSBootMenu not installed"
+    if ! command -v generate-zbm &>/dev/null; then
+        warning "ZFSBootMenu not installed"
+        SYSTEM_ISSUES["zbm"]="Not installed"
+        increment_check "warn"
+        return 0
+    fi
+    
+    success "ZFSBootMenu is installed"
+    increment_check "ok"
+    
+    # Check ZBM config (from config: ZBM_CONFIG)
+    if [[ ! -f "$ZBM_CONFIG" ]]; then
+        warning "ZFSBootMenu config not found: $ZBM_CONFIG (from config)"
+        SYSTEM_ISSUES["zbm_config"]="Missing"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_zfsbootmenu_config
+        fi
+    else
+        success "ZFSBootMenu config exists: $ZBM_CONFIG"
+        increment_check "ok"
+    fi
+    
+    # Check EFI directory (from config: ZBM_EFI_DIR)
+    if [[ ! -d "$ZBM_EFI_DIR" ]]; then
+        warning "ZFSBootMenu EFI directory not found: $ZBM_EFI_DIR (from config)"
+        SYSTEM_ISSUES["zbm_efi"]="Missing"
+        increment_check "warn"
+    else
+        success "ZFSBootMenu EFI directory exists: $ZBM_EFI_DIR"
+        increment_check "ok"
+        
+        # Check for ZBM EFI files
+        if [[ ! -f "$ZBM_EFI_DIR/vmlinuz.EFI" ]] && [[ ! -f "$ZBM_EFI_DIR/vmlinuz-backup.EFI" ]]; then
+            error "ZFSBootMenu EFI files not found in $ZBM_EFI_DIR"
+            SYSTEM_ISSUES["zbm_efi_files"]="Missing"
+            increment_check "error"
+            
+            if [[ "$REPAIR_MODE" == "true" ]]; then
+                repair_zfsbootmenu
+            fi
+        else
+            success "ZFSBootMenu EFI files found"
+            increment_check "ok"
+        fi
+    fi
+    
+    # Check org.zfsbootmenu:commandline property on boot datasets
+    check_zbm_properties
+}
+
+check_zbm_properties() {
+    debug "Checking ZFSBootMenu properties on boot datasets"
+    
+    local pools
+    IFS=' ' read -ra pools <<< "$(get_pools)"
+    
+    for pool in "${pools[@]}"; do
+        local bootfs
+        bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "")
+        
+        if [[ -n "$bootfs" ]] && [[ "$bootfs" != "-" ]]; then
+            local cmdline
+            cmdline=$(zfs get -H -o value org.zfsbootmenu:commandline "$bootfs" 2>/dev/null || echo "")
+            
+            if [[ -z "$cmdline" ]] || [[ "$cmdline" == "-" ]]; then
+                warning "Boot dataset $bootfs missing org.zfsbootmenu:commandline"
+                SYSTEM_ISSUES["zbm_cmdline_$pool"]="Missing"
+                increment_check "warn"
+                
+                if [[ "$REPAIR_MODE" == "true" ]]; then
+                    repair_zbm_property "$bootfs"
+                fi
+            else
+                success "Boot dataset $bootfs has ZFSBootMenu commandline"
+                increment_check "ok"
+            fi
+        fi
+    done
+}
+
+check_fstab() {
+    header "System: fstab"
+    
+    debug "Checking fstab from config: $FSTAB"
+    
+    if [[ ! -f "$FSTAB" ]]; then
+        error "fstab not found: $FSTAB (from config)"
+        SYSTEM_ISSUES["fstab"]="Missing"
+        increment_check "error"
+        return 1
+    fi
+    
+    success "fstab exists"
+    increment_check "ok"
+    
+    # Check for EFI mount entry (from config: ESP_MOUNT)
+    if ! grep -q "${ESP_MOUNT}" "$FSTAB" 2>/dev/null; then
+        warning "EFI mount not found in fstab: $ESP_MOUNT (from config)"
+        SYSTEM_ISSUES["fstab_efi"]="Missing entry"
+        increment_check "warn"
+        
+        if [[ "$REPAIR_MODE" == "true" ]]; then
+            repair_fstab
+        fi
+    else
+        success "EFI mount entry found in fstab"
+        increment_check "ok"
+    fi
+}
+
+check_system_configs() {
+    header "System: Configuration Files"
+    
+    debug "Checking system configuration files from config"
+    
+    # Check rc.conf (from config: RC_CONF)
+    if [[ ! -f "$RC_CONF" ]]; then
+        warning "rc.conf not found: $RC_CONF (from config)"
+        SYSTEM_ISSUES["rc_conf"]="Missing"
+        increment_check "warn"
+    else
+        success "rc.conf exists"
+        increment_check "ok"
+    fi
+    
+    # Check other configs if verbose
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        check_optional_config "$IWD_CONF" "iwd.conf"
+        check_optional_config "$RESOLVCONF_CONF" "resolvconf.conf"
+        check_optional_config "$SYSCTL_CONF" "sysctl.conf"
+        check_optional_config "$SUDOERS_WHEEL_FILE" "sudoers wheel"
+    fi
+}
+
+check_optional_config() {
+    local config_file="$1"
+    local config_name="$2"
+    
+    if [[ -f "$config_file" ]]; then
+        success "$config_name exists: $config_file"
+    else
+        info "$config_name not found: $config_file (may use defaults)"
+    fi
+}
+
+check_runit_services() {
+    header "System: Runit Services"
+    
+    debug "Checking runit service links"
+    
+    local service_dir="/etc/runit/runsvdir/default"
+    
+    if [[ ! -d "$service_dir" ]]; then
+        warning "Runit service directory not found: $service_dir"
+        SYSTEM_ISSUES["runit_dir"]="Missing"
         increment_check "warn"
         return 1
     fi
     
-    print_status "ok" "ZFSBootMenu installed"
-    increment_check "ok"
+    # Check essential services (from config: ESSENTIAL_SERVICES)
+    local essential_missing=0
+    for service in $ESSENTIAL_SERVICES; do
+        if [[ ! -L "$service_dir/$service" ]]; then
+            warning "Essential service not enabled: $service"
+            SYSTEM_ISSUES["service_$service"]="Not enabled"
+            ((essential_missing++))
+            increment_check "warn"
+        elif [[ "$VERBOSE_MODE" == "true" ]]; then
+            success "Service enabled: $service"
+        fi
+    done
     
-    # Check EFI directory
-    if [[ ! -d /boot/efi/EFI/ZBM ]]; then
-        SYSTEM_ISSUES["zbm"]="${SYSTEM_ISSUES[zbm]:-}; ZFSBootMenu EFI directory missing"
-        print_status "warn" "ZFSBootMenu EFI directory missing"
-        increment_check "warn"
-        has_issue=true
-    else
-        # Check for EFI images
-        if [[ -f /boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
-            print_status "ok" "ZFSBootMenu EFI image exists"
-            increment_check "ok"
-        else
-            SYSTEM_ISSUES["zbm"]="${SYSTEM_ISSUES[zbm]:-}; ZFSBootMenu EFI image missing"
-            print_status "error" "ZFSBootMenu EFI image missing"
-            increment_check "error"
-            has_issue=true
+    # Check ZFS services (from config: ZFS_SERVICES)
+    local zfs_missing=0
+    for service in $ZFS_SERVICES; do
+        if [[ ! -L "$service_dir/$service" ]]; then
+            warning "ZFS service not enabled: $service"
+            SYSTEM_ISSUES["service_$service"]="Not enabled"
+            ((zfs_missing++))
+            increment_check "warn"
+        elif [[ "$VERBOSE_MODE" == "true" ]]; then
+            success "ZFS service enabled: $service"
         fi
-        
-        # Check for backup image
-        if [[ -f /boot/efi/EFI/ZBM/vmlinuz-backup.efi ]]; then
-            print_status "info" "Backup EFI image exists"
-        fi
+    done
+    
+    if [[ $essential_missing -eq 0 ]] && [[ $zfs_missing -eq 0 ]]; then
+        success "All configured services are enabled"
+        increment_check "ok"
     fi
-    
-    return $([ "$has_issue" = true ] && echo 1 || echo 0)
 }
 
+# Part 2: Repair Functions and Main
+
 # ============================================
-# Repair Functions
+# REPAIR FUNCTIONS
 # ============================================
 
-repair_hostid() {
-    subheader "Repairing System Hostid"
+repair_pool_property() {
+    local pool="$1"
+    local property="$2"
+    local value="$3"
     
-    if [[ -f /etc/hostid ]]; then
-        info "Backing up existing hostid..."
-        backup_file /etc/hostid
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would set $pool property: $property=$value"
+        return 0
     fi
     
-    info "Generating new hostid..."
-    if zgenhostid -f; then
-        success "Hostid generated"
+    info "Setting $pool property: $property=$value"
+    
+    if zpool set "$property=$value" "$pool" 2>/dev/null; then
+        success "Property set successfully"
+        SYSTEM_REPAIRS["${pool}_${property}"]="Set to $value"
+        return 0
+    else
+        error "Failed to set property"
+        return 1
+    fi
+}
+
+repair_dataset_property() {
+    local dataset="$1"
+    local property="$2"
+    local value="$3"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would set $dataset property: $property=$value"
+        return 0
+    fi
+    
+    info "Setting $dataset property: $property=$value"
+    
+    if zfs set "$property=$value" "$dataset" 2>/dev/null; then
+        success "Property set successfully"
+        SYSTEM_REPAIRS["${dataset}_${property}"]="Set to $value"
+        return 0
+    else
+        error "Failed to set property"
+        return 1
+    fi
+}
+
+repair_key_permissions() {
+    local key_file="$1"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would set permissions on: $key_file to 000"
+        return 0
+    fi
+    
+    info "Setting secure permissions on key file: $key_file"
+    
+    if chmod 000 "$key_file" 2>/dev/null; then
+        success "Permissions set to 000"
+        SYSTEM_REPAIRS["key_perms_$(basename "$key_file")"]="Set to 000"
+        return 0
+    else
+        error "Failed to set permissions"
+        return 1
+    fi
+}
+
+repair_key_backup() {
+    local key_file="$1"
+    local backup_file="$2"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would backup $key_file to $backup_file"
+        return 0
+    fi
+    
+    info "Creating key backup: $backup_file"
+    
+    # Ensure backup directory exists (from config: ZFS_KEY_BACKUP_DIR)
+    mkdir -p "$(dirname "$backup_file")"
+    
+    if cp "$key_file" "$backup_file" 2>/dev/null && chmod 000 "$backup_file" 2>/dev/null; then
+        success "Key backup created with secure permissions"
+        SYSTEM_REPAIRS["key_backup_$(basename "$key_file")"]="Created"
+        return 0
+    else
+        error "Failed to create key backup"
+        return 1
+    fi
+}
+
+repair_hostid() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would regenerate hostid: $ZFS_HOSTID_FILE"
+        return 0
+    fi
+    
+    info "Regenerating hostid: $ZFS_HOSTID_FILE (from config)"
+    
+    # Generate new hostid
+    if zgenhostid -f 2>/dev/null; then
+        success "Hostid regenerated: $ZFS_HOSTID_FILE"
+        SYSTEM_REPAIRS["hostid"]="Regenerated"
         
-        if [[ -f /etc/hostid ]] && [[ $(stat -c%s /etc/hostid) -eq 4 ]]; then
-            local new_hostid
-            new_hostid=$(hostid)
-            info "New hostid: $new_hostid"
-            SYSTEM_REPAIRS["hostid"]="Generated new hostid: $new_hostid"
-            return 0
-        else
-            error "Generated hostid file is invalid"
-            return 1
-        fi
+        # Hostid changed, need to rebuild initramfs
+        info "Hostid changed, initramfs needs to be rebuilt"
+        repair_initramfs
+        return 0
     else
         error "Failed to generate hostid"
         return 1
@@ -978,35 +1433,24 @@ repair_hostid() {
 }
 
 repair_zpool_cache() {
-    subheader "Repairing ZPool Cache"
+    local pool="$1"
     
-    local pools
-    pools=$(get_pools) || return 1
-    
-    if [[ -z "$pools" ]]; then
-        error "No pools found to cache"
-        return 1
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local cache_file
+        cache_file="$(get_pool_cache_file "$pool")"
+        info "[DRY-RUN] Would regenerate pool cache: $cache_file"
+        return 0
     fi
     
-    info "Backing up existing cache..."
-    if [[ -f /etc/zfs/zpool.cache ]]; then
-        backup_file /etc/zfs/zpool.cache
-    fi
+    info "Regenerating pool cache for: $pool"
     
-    info "Regenerating pool cache..."
-    mkdir -p /etc/zfs
+    local cache_file
+    cache_file="$(get_pool_cache_file "$pool")"
     
-    # Set cachefile property on all pools
-    while IFS= read -r pool; do
-        info "Setting cachefile on pool: $pool"
-        zpool set cachefile=/etc/zfs/zpool.cache "$pool"
-    done <<< "$pools"
-    
-    sleep 2
-    
-    if [[ -s /etc/zfs/zpool.cache ]]; then
-        success "Pool cache regenerated"
-        SYSTEM_REPAIRS["cache"]="Regenerated pool cache for pools: $(echo $pools | tr '\n' ' ')"
+    # Set cachefile property using config pattern
+    if zpool set cachefile="$cache_file" "$pool" 2>/dev/null; then
+        success "Pool cache regenerated: $cache_file"
+        SYSTEM_REPAIRS["cache_$pool"]="Regenerated"
         return 0
     else
         error "Failed to regenerate pool cache"
@@ -1014,377 +1458,538 @@ repair_zpool_cache() {
     fi
 }
 
-repair_dracut_config() {
-    subheader "Repairing Dracut Configuration"
+repair_cache_permissions() {
+    local cache_file="$1"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would set permissions on: $cache_file to 644"
+        return 0
+    fi
+    
+    info "Setting permissions on cache file: $cache_file"
+    
+    if chmod 644 "$cache_file" 2>/dev/null; then
+        success "Permissions set to 644"
+        SYSTEM_REPAIRS["cache_perms_$(basename "$cache_file")"]="Set to 644"
+        return 0
+    else
+        error "Failed to set permissions"
+        return 1
+    fi
+}
+
+repair_dracut_main_config() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would create/update: $DRACUT_CONF (from config)"
+        return 0
+    fi
+    
+    info "Creating/updating main dracut configuration: $DRACUT_CONF"
+    
+    # Use template from config: DRACUT_CONF_CONTENT
+    echo "$DRACUT_CONF_CONTENT" > "$DRACUT_CONF"
+    
+    if [[ $? -eq 0 ]]; then
+        success "Dracut main config created from template"
+        info "Template source: zfs-setup.conf::DRACUT_CONF_CONTENT"
+        SYSTEM_REPAIRS["dracut_conf"]="Created from template"
+        
+        # Config changed, rebuild initramfs
+        repair_initramfs
+        return 0
+    else
+        error "Failed to create dracut main config"
+        return 1
+    fi
+}
+
+repair_dracut_zfs_config() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would create/update: $DRACUT_ZFS_CONF (from config)"
+        return 0
+    fi
+    
+    info "Creating/updating ZFS dracut configuration: $DRACUT_ZFS_CONF"
+    
+    # Ensure directory exists (from config: DRACUT_CONF_DIR)
+    mkdir -p "$DRACUT_CONF_DIR"
     
     # Get all pools
     local pools
-    pools=$(get_pools) || return 1
+    IFS=' ' read -ra pools <<< "$(get_pools)"
     
-    # Create config directory if missing
-    if [[ ! -d "$DRACUT_CONF_DIR" ]]; then
-        info "Creating dracut config directory..."
-        ensure_directory "$DRACUT_CONF_DIR" 755
+    if [[ ${#pools[@]} -eq 0 ]]; then
+        error "No ZFS pools found"
+        return 1
     fi
     
-    # Backup existing config
-    if [[ -f "$DRACUT_ZFS_CONF" ]]; then
-        info "Backing up existing config..."
-        backup_file "$DRACUT_ZFS_CONF"
+    # Generate config using helper function and template from config
+    local config_content
+    config_content="$(generate_dracut_zfs_config "${pools[@]}")"
+    
+    if [[ -z "$config_content" ]]; then
+        error "Failed to generate dracut ZFS config from template"
+        return 1
     fi
     
-    info "Writing dracut ZFS configuration..."
+    # Write config
+    echo "$config_content" > "$DRACUT_ZFS_CONF"
     
-    # Build install_items with all pool keys
-    local install_items="/etc/hostid"
-    while IFS= read -r pool; do
-        local key_file="/etc/zfs/${pool}.key"
-        if [[ -f "$key_file" ]]; then
-            install_items="$install_items $key_file"
-        fi
-    done <<< "$pools"
-    
-    # Write configuration
-    cat > "$DRACUT_ZFS_CONF" <<EOF
-hostonly="yes"
-hostonly_cmdline="no"
-nofsck="yes"
-add_dracutmodules+=" zfs "
-omit_dracutmodules+=" btrfs resume "
-install_items+=" $install_items "
-force_drivers+=" zfs "
-filesystems+=" zfs "
-EOF
-    
-    if [[ -f "$DRACUT_ZFS_CONF" ]]; then
-        success "Dracut ZFS config created"
-        SYSTEM_REPAIRS["dracut"]="Created/updated dracut ZFS configuration with keys: $install_items"
+    if [[ $? -eq 0 ]]; then
+        success "Dracut ZFS config created from template"
+        info "Template source: zfs-setup.conf::DRACUT_ZFS_CONF_TEMPLATE"
         
-        # Verify content
-        local dracut_content
-        dracut_content=$(cat "$DRACUT_ZFS_CONF")
+        # Show what was included
+        info "Included files:"
+        echo "$config_content" | grep -oP '(?<=install_items\+=" ).*(?= ")' | tr ' ' '\n' | sed 's/^/  - /'
         
-        if [[ "$dracut_content" == *"add_dracutmodules"*"zfs"* ]] && \
-           [[ "$dracut_content" == *"force_drivers"*"zfs"* ]] && \
-           [[ "$dracut_content" == *"install_items"* ]] && \
-           [[ "$dracut_content" == *"/etc/hostid"* ]]; then
-            print_status "ok" "Configuration verified"
-            return 0
-        else
-            error "Configuration verification failed"
-            return 1
-        fi
+        SYSTEM_REPAIRS["dracut_zfs_conf"]="Created from template"
+        
+        # Config changed, rebuild initramfs
+        repair_initramfs
+        return 0
     else
-        error "Failed to create dracut config"
+        error "Failed to create dracut ZFS config"
         return 1
     fi
 }
 
 repair_initramfs() {
-    subheader "Rebuilding Initramfs"
-    
-    info "This will rebuild all initramfs images..."
-    
-    if ! ask_yes_no "Proceed with initramfs rebuild?" "n"; then
-        info "Skipping initramfs rebuild"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would rebuild initramfs"
         return 0
     fi
     
-    info "Running dracut to rebuild initramfs..."
-    if dracut --force --hostonly --kver "$(uname -r)"; then
-        success "Initramfs rebuilt"
-        SYSTEM_REPAIRS["initramfs"]="Rebuilt initramfs for kernel $(uname -r)"
-        return 0
+    info "Rebuilding initramfs..."
+    
+    # Validate prerequisites from config
+    validate_config_loaded || return 1
+    
+    # Ensure dracut configs exist
+    if [[ ! -f "$DRACUT_CONF" ]]; then
+        warning "Main dracut config missing, creating from template..."
+        repair_dracut_main_config || return 1
+    fi
+    
+    if [[ ! -f "$DRACUT_ZFS_CONF" ]]; then
+        warning "ZFS dracut config missing, creating from template..."
+        repair_dracut_zfs_config || return 1
+    fi
+    
+    # Ensure hostid exists (from config: ZFS_HOSTID_FILE)
+    if [[ ! -f "$ZFS_HOSTID_FILE" ]]; then
+        warning "Hostid missing, generating..."
+        repair_hostid || return 1
+    fi
+    
+    # Get kernel version
+    local kernel_version
+    kernel_version=$(uname -r)
+    
+    local initramfs_file="${INITRAMFS_DIR}/initramfs-${kernel_version}.img"
+    
+    info "Rebuilding initramfs for kernel: $kernel_version"
+    info "Output: $initramfs_file"
+    info "Using configuration:"
+    info "  Main config: $DRACUT_CONF"
+    info "  ZFS config: $DRACUT_ZFS_CONF"
+    info "  Templates from: zfs-setup.conf v${CONFIG_VERSION}"
+    
+    # Rebuild initramfs
+    if dracut --force \
+             --hostonly \
+             --no-hostonly-cmdline \
+             --kver "$kernel_version" \
+             "$initramfs_file" \
+             2>&1 | tee /tmp/dracut-rebuild.log; then
+        success "Initramfs rebuilt successfully"
+        SYSTEM_REPAIRS["initramfs"]="Rebuilt with config templates"
+        
+        # Verify contents
+        verify_initramfs_contents "$initramfs_file"
+        return $?
     else
         error "Failed to rebuild initramfs"
+        error "Check log: /tmp/dracut-rebuild.log"
+        return 1
+    fi
+}
+
+repair_zfsbootmenu_config() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would create ZFSBootMenu config: $ZBM_CONFIG (from config)"
+        return 0
+    fi
+    
+    info "Creating ZFSBootMenu configuration: $ZBM_CONFIG"
+    
+    # Ensure config directory exists
+    mkdir -p "$(dirname "$ZBM_CONFIG")"
+    
+    # Use template from config: ZBM_CONFIG_CONTENT
+    echo "$ZBM_CONFIG_CONTENT" > "$ZBM_CONFIG"
+    
+    if [[ $? -eq 0 ]]; then
+        success "ZFSBootMenu config created from template"
+        info "Template source: zfs-setup.conf::ZBM_CONFIG_CONTENT"
+        SYSTEM_REPAIRS["zbm_config"]="Created from template"
+        
+        # Config created, regenerate ZFSBootMenu
+        repair_zfsbootmenu
+        return 0
+    else
+        error "Failed to create ZFSBootMenu config"
         return 1
     fi
 }
 
 repair_zfsbootmenu() {
-    subheader "Rebuilding ZFSBootMenu"
-    
-    if ! command_exists generate-zbm; then
-        error "ZFSBootMenu not installed"
-        return 1
-    fi
-    
-    info "This will regenerate ZFSBootMenu EFI images..."
-    
-    if ! ask_yes_no "Proceed with ZFSBootMenu rebuild?" "n"; then
-        info "Skipping ZFSBootMenu rebuild"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would regenerate ZFSBootMenu"
         return 0
     fi
     
-    info "Running generate-zbm..."
-    if generate-zbm; then
-        success "ZFSBootMenu regenerated"
-        SYSTEM_REPAIRS["zbm"]="Regenerated ZFSBootMenu EFI images"
+    info "Regenerating ZFSBootMenu..."
+    
+    # Ensure config exists
+    if [[ ! -f "$ZBM_CONFIG" ]]; then
+        warning "ZFSBootMenu config missing, creating from template..."
+        repair_zfsbootmenu_config || return 1
+    fi
+    
+    # Ensure EFI directory exists (from config: ZBM_EFI_DIR)
+    mkdir -p "$ZBM_EFI_DIR"
+    
+    # Regenerate ZFSBootMenu
+    if generate-zbm --config "$ZBM_CONFIG" 2>&1 | tee /tmp/zbm-generate.log; then
+        success "ZFSBootMenu regenerated successfully"
+        SYSTEM_REPAIRS["zbm"]="Regenerated"
         
-        # Verify images exist
-        if [[ -f /boot/efi/EFI/ZBM/vmlinuz.efi ]]; then
-            print_status "ok" "EFI image verified"
-            return 0
+        # Verify EFI files were created
+        if [[ -f "$ZBM_EFI_DIR/vmlinuz.EFI" ]]; then
+            success "ZFSBootMenu EFI files created"
         else
-            error "EFI image missing after rebuild"
-            return 1
+            warning "ZFSBootMenu EFI files not found after generation"
         fi
+        
+        return 0
     else
         error "Failed to regenerate ZFSBootMenu"
+        error "Check log: /tmp/zbm-generate.log"
         return 1
     fi
 }
 
-repair_bootfs_property() {
-    local pool="$1"
+repair_zbm_property() {
+    local dataset="$1"
     
-    subheader "Repairing Bootfs Property for Pool: $pool"
-    
-    local current_bootfs
-    current_bootfs=$(zpool get -H -o value bootfs "$pool" 2>/dev/null || echo "")
-    
-    # Case 1: No bootfs set but candidate found
-    if [[ -z "$current_bootfs" ]] || [[ "$current_bootfs" == "-" ]]; then
-        local candidate="${BOOTFS_CANDIDATES[$pool]:-}"
-        
-        if [[ -n "$candidate" ]]; then
-            warning "No bootfs set on pool $pool"
-            info "Found candidate dataset: $candidate"
-            
-            if ask_yes_no "Set $candidate as bootfs?" "n"; then
-                info "Setting bootfs property..."
-                if zpool set bootfs="$candidate" "$pool"; then
-                    success "Bootfs property set to: $candidate"
-                    SYSTEM_REPAIRS["bootfs_$pool"]="Set bootfs to $candidate"
-                    return 0
-                else
-                    error "Failed to set bootfs property"
-                    return 1
-                fi
-            else
-                info "Skipping bootfs repair"
-                return 0
-            fi
-        else
-            error "No bootfs candidate found for pool $pool"
-            return 1
-        fi
-    fi
-    
-    # Case 2: Bootfs exists but properties need fixing
-    if zfs list "$current_bootfs" &>/dev/null; then
-        local needs_repair=false
-        local repairs=()
-        
-        # Check mountpoint
-        local mountpoint
-        mountpoint=$(zfs get -H -o value mountpoint "$current_bootfs" 2>/dev/null || echo "")
-        if [[ "$mountpoint" != "/" ]] && [[ "$mountpoint" != "none" ]]; then
-            needs_repair=true
-            repairs+=("mountpoint: $mountpoint → /")
-        fi
-        
-        # Check ZFSBootMenu cmdline
-        local zbm_cmdline
-        zbm_cmdline=$(zfs get -H -o value org.zfsbootmenu:commandline "$current_bootfs" 2>/dev/null || echo "")
-        if [[ -z "$zbm_cmdline" ]] || [[ "$zbm_cmdline" == "-" ]]; then
-            needs_repair=true
-            repairs+=("Add ZFSBootMenu commandline")
-        fi
-        
-        if [[ "$needs_repair" == true ]]; then
-            warning "Bootfs dataset $current_bootfs needs repairs:"
-            for repair in "${repairs[@]}"; do
-                bullet "$repair"
-            done
-            echo ""
-            
-            if ask_yes_no "Apply repairs?" "n"; then
-                # Fix mountpoint if needed
-                if [[ "$mountpoint" != "/" ]] && [[ "$mountpoint" != "none" ]]; then
-                    info "Setting mountpoint to /..."
-                    if zfs set mountpoint=/ "$current_bootfs"; then
-                        success "Mountpoint updated"
-                    else
-                        error "Failed to update mountpoint"
-                        return 1
-                    fi
-                fi
-                
-                # Set ZFSBootMenu cmdline if missing
-                if [[ -z "$zbm_cmdline" ]] || [[ "$zbm_cmdline" == "-" ]]; then
-                    info "Setting ZFSBootMenu commandline..."
-                    local default_cmdline="ro quiet nowatchdog loglevel=0 zbm.timeout=5"
-                    if zfs set org.zfsbootmenu:commandline="$default_cmdline" "$current_bootfs"; then
-                        success "ZFSBootMenu commandline set"
-                    else
-                        error "Failed to set ZFSBootMenu commandline"
-                        return 1
-                    fi
-                fi
-                
-                SYSTEM_REPAIRS["bootfs_$pool"]="Repaired properties for $current_bootfs"
-                success "Bootfs properties repaired"
-                return 0
-            else
-                info "Skipping bootfs repairs"
-                return 0
-            fi
-        else
-            info "Bootfs properties are correct, no repairs needed"
-            return 0
-        fi
-    else
-        error "Bootfs dataset $current_bootfs does not exist!"
-        return 1
-    fi
-}
-
-# ============================================
-# Snapshot Functions
-# ============================================
-
-offer_snapshot_creation() {
-    if [[ "$SNAPSHOT_ON_SUCCESS" != true ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would set org.zfsbootmenu:commandline on: $dataset"
         return 0
     fi
     
-    if [[ $CHECK_ERROR -gt 0 ]] || [[ $CHECK_WARN -gt 0 ]]; then
-        info "Skipping snapshot creation (checks did not pass 100%)"
-        return 0
-    fi
+    info "Setting org.zfsbootmenu:commandline on: $dataset"
     
-    header "SNAPSHOT CREATION"
-    
-    success "All health checks passed!"
-    echo ""
-    
-    if ! ask_yes_no "Would you like to create a snapshot of the root dataset?" "y"; then
-        info "Snapshot creation skipped"
-        return 0
-    fi
-    
-    # Find pool containing root filesystem
-    local pools
-    pools=$(get_pools) || return 1
-    
-    local root_pool=""
-    local root_dataset=""
-    
-    while IFS= read -r pool; do
-        local has_root
-        has_root=$(zfs list -H -o name,mountpoint -r "$pool" | grep -E '\s/$' || echo "")
-        if [[ -n "$has_root" ]]; then
-            root_pool="$pool"
-            root_dataset=$(echo "$has_root" | awk '{print $1}')
-            break
-        fi
-    done <<< "$pools"
-    
-    if [[ -z "$root_pool" ]] || [[ -z "$root_dataset" ]]; then
-        error "Could not find root dataset"
-        return 1
-    fi
-    
-    # Generate snapshot name
-    local timestamp
-    timestamp=$(date +%Y%m%d-%H%M%S)
-    local snap_name="health-check-${timestamp}"
-    local full_snap_name="${root_dataset}@${snap_name}"
-    
-    info "Creating recursive snapshot: $full_snap_name"
-    
-    if zfs snapshot -r "$full_snap_name"; then
-        success "Snapshot created: $full_snap_name"
-        echo ""
-        info "To rollback to this snapshot:"
-        echo "  zfs rollback -r $full_snap_name"
-        echo ""
-        info "To destroy this snapshot:"
-        echo "  zfs destroy -r $full_snap_name"
-        echo ""
+    # Use commandline from config: ZBM_COMMANDLINE_PROPERTY
+    if zfs set org.zfsbootmenu:commandline="$ZBM_COMMANDLINE_PROPERTY" "$dataset" 2>/dev/null; then
+        success "ZFSBootMenu commandline property set"
+        info "Value: $ZBM_COMMANDLINE_PROPERTY (from config)"
+        SYSTEM_REPAIRS["zbm_cmdline_$dataset"]="Set from config"
         return 0
     else
-        error "Failed to create snapshot"
+        error "Failed to set ZFSBootMenu property"
+        return 1
+    fi
+}
+
+repair_fstab() {
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "[DRY-RUN] Would update fstab: $FSTAB (from config)"
+        return 0
+    fi
+    
+    info "Updating fstab: $FSTAB"
+    
+    # Find EFI partition (from config: ESP_MOUNT)
+    local efi_partition
+    efi_partition=$(findmnt -n -o SOURCE "$ESP_MOUNT" 2>/dev/null)
+    
+    if [[ -z "$efi_partition" ]]; then
+        error "Cannot determine EFI partition for $ESP_MOUNT (from config)"
+        return 1
+    fi
+    
+    # Get EFI UUID
+    local efi_uuid
+    efi_uuid=$(blkid -s UUID -o value "$efi_partition" 2>/dev/null)
+    
+    if [[ -z "$efi_uuid" ]]; then
+        error "Cannot determine EFI partition UUID"
+        return 1
+    fi
+    
+    info "EFI partition: $efi_partition (UUID: $efi_uuid)"
+    
+    # Backup fstab
+    local backup="${FSTAB}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$FSTAB" "$backup"
+    success "Backed up fstab to: $backup"
+    
+    # Check if EFI entry already exists
+    if grep -q "${ESP_MOUNT}" "$FSTAB" 2>/dev/null; then
+        info "EFI mount entry already exists in fstab"
+        return 0
+    fi
+    
+    # Generate EFI entry using template from config and helper function
+    local efi_entry
+    efi_entry="$(substitute_template "$FSTAB_EFI_TEMPLATE" "EFI_UUID=$efi_uuid")"
+    
+    # Add entry to fstab
+    echo "$efi_entry" >> "$FSTAB"
+    
+    if [[ $? -eq 0 ]]; then
+        success "Added EFI mount entry to fstab"
+        info "Template source: zfs-setup.conf::FSTAB_EFI_TEMPLATE"
+        info "Entry: $efi_entry"
+        SYSTEM_REPAIRS["fstab_efi"]="Added from template"
+        return 0
+    else
+        error "Failed to update fstab"
         return 1
     fi
 }
 
 # ============================================
-# Report Functions
+# REPORTING FUNCTIONS
 # ============================================
 
 show_summary() {
-    header "HEALTH CHECK SUMMARY"
-    
-    local total_checks=$((CHECK_OK + CHECK_WARN + CHECK_ERROR))
-    
-    subheader "Check Results:"
-    bullet "Total checks: $total_checks"
-    bullet "Passed: ${GREEN}${CHECK_OK}${NC}"
-    if [[ $CHECK_WARN -gt 0 ]]; then
-        bullet "Warnings: ${YELLOW}${CHECK_WARN}${NC}"
-    else
-        bullet "Warnings: 0"
-    fi
-    if [[ $CHECK_ERROR -gt 0 ]]; then
-        bullet "Errors: ${RED}${CHECK_ERROR}${NC}"
-    else
-        bullet "Errors: 0"
-    fi
     echo ""
+    section "Health Check Summary"
+    
+    info "Total checks performed: $((CHECK_OK + CHECK_WARN + CHECK_ERROR))"
+    
+    if [[ $CHECK_OK -gt 0 ]]; then
+        success "Passed: $CHECK_OK"
+    fi
+    
+    if [[ $CHECK_WARN -gt 0 ]]; then
+        warning "Warnings: $CHECK_WARN"
+    fi
+    
+    if [[ $CHECK_ERROR -gt 0 ]]; then
+        error "Errors: $CHECK_ERROR"
+    fi
+    
+    # Show configuration version
+    echo ""
+    info "Configuration: zfs-setup.conf v${CONFIG_VERSION} (${CONFIG_DATE})"
+    info "Installation script: v${INSTALLATION_SCRIPT_VERSION}"
     
     # Show pool issues
     if [[ ${#POOL_ERRORS[@]} -gt 0 ]] || [[ ${#POOL_WARNINGS[@]} -gt 0 ]]; then
-        subheader "Pool Issues:"
-        
-        for pool in "${!POOL_ERRORS[@]}"; do
-            echo -e "${RED}✗${NC} ${BOLD}$pool${NC}: ${POOL_ERRORS[$pool]}"
-        done
-        
-        for pool in "${!POOL_WARNINGS[@]}"; do
-            echo -e "${YELLOW}⚠${NC} ${BOLD}$pool${NC}: ${POOL_WARNINGS[$pool]}"
-        done
         echo ""
+        section "Pool Issues"
+        
+        if [[ ${#POOL_ERRORS[@]} -gt 0 ]]; then
+            error "Pool Errors:"
+            for key in "${!POOL_ERRORS[@]}"; do
+                echo "  - $key: ${POOL_ERRORS[$key]}"
+            done
+        fi
+        
+        if [[ ${#POOL_WARNINGS[@]} -gt 0 ]]; then
+            warning "Pool Warnings:"
+            for key in "${!POOL_WARNINGS[@]}"; do
+                echo "  - $key: ${POOL_WARNINGS[$key]}"
+            done
+        fi
     fi
     
     # Show system issues
     if [[ ${#SYSTEM_ISSUES[@]} -gt 0 ]]; then
-        subheader "System Issues:"
-        for component in "${!SYSTEM_ISSUES[@]}"; do
-            echo -e "${YELLOW}⚠${NC} ${BOLD}$component${NC}: ${SYSTEM_ISSUES[$component]}"
-        done
         echo ""
+        section "System Issues"
+        
+        for key in "${!SYSTEM_ISSUES[@]}"; do
+            echo "  - $key: ${SYSTEM_ISSUES[$key]}"
+        done
     fi
     
-    # Show repairs if any were made
+    # Show repairs performed
     if [[ ${#SYSTEM_REPAIRS[@]} -gt 0 ]]; then
-        subheader "Repairs Applied:"
-        for component in "${!SYSTEM_REPAIRS[@]}"; do
-            echo -e "${GREEN}✓${NC} ${BOLD}$component${NC}: ${SYSTEM_REPAIRS[$component]}"
-        done
         echo ""
+        section "Repairs Performed"
+        
+        for key in "${!SYSTEM_REPAIRS[@]}"; do
+            success "  - $key: ${SYSTEM_REPAIRS[$key]}"
+        done
     fi
     
-    # Overall status
+    echo ""
+}
+
+show_recommendations() {
     if [[ $CHECK_ERROR -eq 0 ]] && [[ $CHECK_WARN -eq 0 ]]; then
-        success "System is healthy! All checks passed."
         return 0
-    elif [[ $CHECK_ERROR -eq 0 ]]; then
-        warning "System is mostly healthy with some warnings"
-        return 1
-    else
-        error "System has errors that require attention"
-        return 2
     fi
+    
+    section "Recommendations"
+    
+    if [[ $CHECK_ERROR -gt 0 ]]; then
+        error "Critical issues found. Recommended actions:"
+        
+        if [[ ${#POOL_ERRORS[@]} -gt 0 ]]; then
+            echo "  - Check pool status with: zpool status"
+            echo "  - Review pool errors: zpool status -v"
+        fi
+        
+        if [[ -n "${SYSTEM_ISSUES[hostid]}" ]]; then
+            echo "  - Regenerate hostid: zgenhostid -f"
+            echo "  - Rebuild initramfs after hostid change"
+        fi
+        
+        if [[ -n "${SYSTEM_ISSUES[initramfs]}" ]]; then
+            echo "  - Rebuild initramfs: dracut --force"
+        fi
+    fi
+    
+    if [[ $CHECK_WARN -gt 0 ]]; then
+        warning "Warnings found. Consider:"
+        
+        for key in "${!POOL_WARNINGS[@]}"; do
+            if [[ "$key" =~ _scrub$ ]]; then
+                local pool="${key%_scrub}"
+                echo "  - Run scrub: zpool scrub $pool"
+            fi
+            
+            if [[ "$key" =~ _capacity$ ]]; then
+                local pool="${key%_capacity}"
+                echo "  - Free up space on pool: $pool"
+                echo "  - Consider: zfs list -t snapshot | grep $pool"
+            fi
+            
+            if [[ "$key" =~ _frag$ ]]; then
+                local pool="${key%_frag}"
+                echo "  - Consider defragmentation for: $pool"
+            fi
+        done
+    fi
+    
+    if [[ "$REPAIR_MODE" == "false" ]] && [[ $CHECK_ERROR -gt 0 ]]; then
+        echo ""
+        info "To automatically repair issues, run with --repair flag"
+    fi
+    
+    echo ""
 }
 
 # ============================================
-# Main Function
+# MAIN CHECK ORCHESTRATION
 # ============================================
 
-main() {
-    # Parse command line arguments
+run_pool_checks() {
+    local pool="$1"
+    
+    banner "Checking Pool: $pool"
+    
+    check_pool_status "$pool"
+    check_pool_capacity "$pool"
+    check_pool_fragmentation "$pool"
+    check_pool_properties "$pool"
+    check_bootfs_property "$pool"
+    check_pool_encryption "$pool"
+    check_scrub_status "$pool"
+    check_root_dataset_properties "$pool"
+    check_home_dataset_properties "$pool"
+    check_dataset_quotas "$pool"
+    check_snapshot_count "$pool"
+    check_dataset_structure "$pool"
+}
+
+run_system_checks() {
+    banner "Checking System Configuration"
+    
+    check_hostid
+    check_zpool_cache
+    check_dracut_config
+    check_initramfs
+    check_zfsbootmenu
+    check_fstab
+    check_system_configs
+    check_runit_services
+}
+
+run_all_checks() {
+    # Get pools
+    local pools
+    if [[ -n "$TARGET_POOL" ]]; then
+        # Check if specified pool exists
+        if ! zpool list -H "$TARGET_POOL" &>/dev/null; then
+            error "Pool not found: $TARGET_POOL"
+            exit 1
+        fi
+        pools="$TARGET_POOL"
+    else
+        pools="$(get_pools)"
+    fi
+    
+    if [[ -z "$pools" ]]; then
+        error "No ZFS pools found"
+        exit 1
+    fi
+    
+    # Check each pool
+    IFS=' ' read -ra pool_array <<< "$pools"
+    for pool in "${pool_array[@]}"; do
+        run_pool_checks "$pool"
+    done
+    
+    # Check system configuration
+    run_system_checks
+}
+
+create_success_snapshot() {
+    if [[ "$SNAPSHOT_ON_SUCCESS" != "true" ]]; then
+        return 0
+    fi
+    
+    if [[ $CHECK_ERROR -gt 0 ]] || [[ $CHECK_WARN -gt 0 ]]; then
+        info "Skipping snapshot creation due to warnings/errors"
+        return 0
+    fi
+    
+    section "Creating Success Snapshot"
+    
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    
+    local pools
+    IFS=' ' read -ra pools <<< "$(get_pools)"
+    
+    for pool in "${pools[@]}"; do
+        local snapshot_name="${pool}@health_check_${timestamp}"
+        
+        if [[ "$DRY_RUN" == "true" ]]; then
+            info "[DRY-RUN] Would create snapshot: $snapshot_name"
+        else
+            info "Creating snapshot: $snapshot_name"
+            
+            if zfs snapshot -r "$snapshot_name" 2>/dev/null; then
+                success "Snapshot created: $snapshot_name"
+            else
+                warning "Failed to create snapshot: $snapshot_name"
+            fi
+        fi
+    done
+}
+
+# ============================================
+# ARGUMENT PARSING
+# ============================================
+
+parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pool)
@@ -1395,16 +2000,20 @@ main() {
                 REPAIR_MODE=true
                 shift
                 ;;
-            --verbose)
+            --dry-run)
+                DRY_RUN=true
+                REPAIR_MODE=true
+                shift
+                ;;
+            --verbose|-v)
                 VERBOSE_MODE=true
-                DEBUG_MODE=true
                 shift
                 ;;
             --snapshot)
                 SNAPSHOT_ON_SUCCESS=true
                 shift
                 ;;
-            --help)
+            --help|-h)
                 show_usage
                 exit 0
                 ;;
@@ -1416,137 +2025,81 @@ main() {
         esac
     done
     
-    # Check if running as root
-    if [[ $EUID -ne 0 ]]; then
-        die "This script must be run as root"
+    # Enable debug mode if verbose
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        DEBUG_MODE=true
     fi
+}
+
+# ============================================
+# MAIN FUNCTION
+# ============================================
+
+main() {
+    # Parse command line arguments
+    parse_arguments "$@"
     
-    # Display header
-    header "ZFS HEALTH CHECK - Version ${SCRIPT_VERSION}"
-    
-    if [[ "$REPAIR_MODE" == true ]]; then
-        warning "Repair mode enabled - will attempt to fix issues"
-    fi
-    
-    if [[ "$SNAPSHOT_ON_SUCCESS" == true ]]; then
-        info "Will create snapshot if all checks pass"
-    fi
-    
+    # Show script header
+    banner "${SCRIPT_NAME} v${SCRIPT_VERSION}"
+    info "Date: ${SCRIPT_DATE}"
+    info "Configuration: zfs-setup.conf v${CONFIG_VERSION}"
     echo ""
     
-    # Get pools to check
-    local pools
-    if [[ -n "$TARGET_POOL" ]]; then
-        if zpool list "$TARGET_POOL" &>/dev/null; then
-            pools="$TARGET_POOL"
+    # Check prerequisites
+    if ! check_root; then
+        error "This script must be run as root"
+        exit 3
+    fi
+    
+    if ! command -v zpool &>/dev/null; then
+        error "ZFS utilities not found"
+        exit 3
+    fi
+    
+    # Show mode information
+    if [[ "$REPAIR_MODE" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            warning "DRY-RUN MODE: No changes will be made"
         else
-            die "Pool not found: $TARGET_POOL"
+            warning "REPAIR MODE: Issues will be automatically fixed"
+            info "Press Ctrl+C within 5 seconds to cancel..."
+            sleep 5
         fi
+    fi
+    
+    if [[ -n "$TARGET_POOL" ]]; then
+        info "Target pool: $TARGET_POOL"
     else
-        pools=$(get_pools)
-        if [[ -z "$pools" ]]; then
-            die "No ZFS pools found"
-        fi
+        info "Checking all pools"
     fi
-    
-    # Convert to array
-    local pool_array=()
-    while IFS= read -r pool; do
-        pool_array+=("$pool")
-    done <<< "$pools"
-    
-    info "Checking ${#pool_array[@]} pool(s)"
-    echo ""
-    
-    # System Configuration Checks
-    header "SYSTEM CONFIGURATION"
-    
-    check_hostid
-    check_zpool_cache
-    check_dracut_config
-    check_initramfs
-    check_zfsbootmenu
     
     echo ""
     
-    # Pool Health Checks
-    header "POOL HEALTH CHECKS"
+    # Run all checks
+    run_all_checks
     
-    for pool in "${pool_array[@]}"; do
-        subheader "Pool: $pool"
-        
-        debug "Processing pool: $pool"
-        
-        check_pool_status "$pool"
-        check_pool_capacity "$pool"
-        check_pool_fragmentation "$pool"
-        check_scrub_status "$pool"
-        check_dataset_quotas "$pool"
-        check_snapshot_count "$pool"
-        check_pool_features "$pool"
-        check_pool_encryption "$pool"
-        check_bootfs_property "$pool"
-        
-        echo ""
-    done
-    
-    # Repair section
-    if [[ "$REPAIR_MODE" == true ]]; then
-        if [[ ${#SYSTEM_ISSUES[@]} -gt 0 ]] || [[ ${#POOL_WARNINGS[@]} -gt 0 ]]; then
-            header "REPAIR MODE"
-            
-            # Repair system issues
-            if [[ -n "${SYSTEM_ISSUES[hostid]:-}" ]]; then
-                repair_hostid
-            fi
-            
-            if [[ -n "${SYSTEM_ISSUES[cache]:-}" ]]; then
-                repair_zpool_cache
-            fi
-            
-            if [[ -n "${SYSTEM_ISSUES[dracut]:-}" ]]; then
-                repair_dracut_config
-            fi
-            
-            if [[ -n "${SYSTEM_ISSUES[initramfs]:-}" ]]; then
-                repair_initramfs
-            fi
-            
-            if [[ -n "${SYSTEM_ISSUES[zbm]:-}" ]]; then
-                repair_zfsbootmenu
-            fi
-            
-            # Repair bootfs issues
-            for pool in "${pool_array[@]}"; do
-                if [[ -n "${POOL_WARNINGS[$pool]:-}" ]] && [[ "${POOL_WARNINGS[$pool]}" == *"bootfs"* ]]; then
-                    repair_bootfs_property "$pool"
-                fi
-            done
-            
-            echo ""
-        fi
-    fi
+    # Create success snapshot if requested
+    create_success_snapshot
     
     # Show summary
     show_summary
-    local exit_code=$?
     
-    echo ""
+    # Show recommendations
+    show_recommendations
     
-    # Offer snapshot creation
-    offer_snapshot_creation
-    
-    # Final message
-    if [[ $exit_code -eq 0 ]]; then
-        success "Health check complete - No issues found"
-    elif [[ $exit_code -eq 1 ]]; then
-        warning "Health check complete - Some warnings found"
+    # Exit with appropriate code
+    if [[ $CHECK_ERROR -gt 0 ]]; then
+        exit 2
+    elif [[ $CHECK_WARN -gt 0 ]]; then
+        exit 1
     else
-        error "Health check complete - Errors found"
+        success "All checks passed!"
+        exit 0
     fi
-    
-    exit $exit_code
 }
 
-# Run main function
+# ============================================
+# SCRIPT ENTRY POINT
+# ============================================
+
 main "$@"
