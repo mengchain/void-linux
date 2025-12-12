@@ -7,7 +7,7 @@
 # Validates against settings defined in zfs-setup.conf
 # Can automatically repair common issues
 
-set -euo pipefail
+
 
 # ============================================
 # SCRIPT INITIALIZATION
@@ -35,6 +35,16 @@ else
     echo "ERROR: zfs-setup-conf-helper.sh not found" >&2
     exit 1
 fi
+
+# Enable strict mode and error trapping
+set_strict_mode      # Sets: set -euo pipefail
+set_error_trap       # Traps ERR signal
+
+
+# ============================================
+# Load Configuration
+# ============================================
+load_config "zfs-setup.conf"
 
 # Validate configuration is loaded
 validate_config_loaded || {
