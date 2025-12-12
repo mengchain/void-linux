@@ -62,9 +62,7 @@ _cleanup_handlers=()
 # ============================================
 # CONFIGURATION AND ENVIRONMENT FUNCTIONS
 # ============================================
-# Load configuration file with validation
-# Load configuration file with validation
-# Searches for config in order: current directory -> /etc/ -> /
+# Searches for config in order: current directory -> . -> ~/.config/ -> /etc/ -> /
 load_config() {
     local config_name="$1"
     local required_vars=("${@:2}")
@@ -72,9 +70,10 @@ load_config() {
     
     # Define search locations in order
     local search_locations=(
-        "./${config_name}"           # Current directory (highest priority)
-        "/etc/${config_name}"        # System config directory
-        "/${config_name}"            # Root directory (lowest priority)
+        "./${config_name}"                      # Current directory (highest priority)
+        "~/.config/${config_name}"              # User config directory
+        "/etc/${config_name}"                   # System config directory
+        "/${config_name}"                       # Root directory (lowest priority)
     )
     
     # Search for config file
@@ -108,6 +107,7 @@ load_config() {
     fi
     
     # Source the configuration file
+    debug "Loading configuration file: $config_file"
     source "$config_file"
     
     # Validate required variables are set
@@ -122,6 +122,8 @@ load_config() {
         error "Required configuration variables not set: ${missing_vars[*]}"
         echo "Please ensure these variables are defined in: $config_file" >&2
         return 1
+    else
+        debug "All required variables validated successfully"
     fi
     
     success "Configuration loaded: $config_file"
