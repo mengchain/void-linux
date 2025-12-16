@@ -169,7 +169,7 @@ animations {
 // ============================================================================
 binds {
     // Mod key: Use "Super" for Windows key
-    Mod { default Mod+T; }  // Mod key definition is internal
+    // Mod { default Mod+T; }  // Mod key definition is internal
     
     // ========================================================================
     // SYSTEM & SESSION
