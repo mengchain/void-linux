@@ -90,7 +90,7 @@ layout {
     struts {
         left 0
         right 0
-        top 0
+        top 30				// Space always reserved
         bottom 0
     }
 }
@@ -103,6 +103,22 @@ window-rule {
     geometry-corner-radius 12
     clip-to-geometry true
 }
+
+// Window rules Status Bar
+window-rule {
+    match app-id="niri-statusbar"
+    strut top 30
+	// strut bottom 30				// For bottom
+    focus-on-activate false			// Make it always visible
+    
+        // Add border
+    border {
+        width 2
+        active-color "#00ff00"    // Bright green for active
+        inactive-color "#ffffff"  // White for inactive
+    }
+}
+
 
 // Example: Floating windows
 window-rule {
@@ -386,6 +402,9 @@ debug {
 // SPAWN AT STARTUP
 // ============================================================================
 spawn-at-startup {
+	// "~/.config/niri/statusbar.sh"
+	
+	
     // Example: Start a status bar
     // "waybar"
     
