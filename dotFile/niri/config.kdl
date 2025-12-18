@@ -2,6 +2,159 @@
 // This configuration provides a modern dark theme with Windows-like keybindings
 // for easier transition from Windows to Linux
 
+
+// ============================================================================
+// ONEDARK PRO COLOR PALETTE REFERENCE
+// ============================================================================
+// These colors can be used in your window rules or custom scripts
+// 
+// Background:      #000000  (Pure Black - modified from #282c34)
+// Foreground:      #abb2bf  (Light Gray)
+// 
+// Black:           #282c34  (Original OneDark background)
+// Red:             #e06c75  (Soft Red)
+// Green:           #98c379  (Soft Green)
+// Yellow:          #e5c07b  (Soft Yellow)
+// Blue:            #61afef  (Bright Blue)
+// Magenta:         #c678dd  (Purple)
+// Cyan:            #56b6c2  (Cyan)
+// White:           #dcdfe4  (Light Gray)
+// 
+// Bright Black:    #3e4451  (Comment Gray)
+// Bright Red:      #be5046  (Dark Red)
+// Bright Green:    #98c379  (Same as Green)
+// Bright Yellow:   #d19a66  (Orange)
+// Bright Blue:     #61afef  (Same as Blue)
+// Bright Magenta:  #c678dd  (Same as Magenta)
+// Bright Cyan:     #56b6c2  (Same as Cyan)
+// Bright White:    #5c6370  (Gray)
+
+// ============================================================================
+// LAYOUT COLORS AND CONFIGS
+// ============================================================================
+layout {
+    // Pure black background
+    background-color "#000000"
+    
+    // Gaps between windows (modern look)
+    gaps 10
+    
+    // Center focused column
+    center-focused-column "never"
+    
+    // Default Window Width
+    default-column-width { proportion 0.5; } 
+    
+    // Default Window Width
+    default-window-height { proportion 0.5; } 
+    
+    // Preset column widths: Cycle between 1/3, 1/2, 2/3 of the output, and a fixed 720 logical pixels.
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+    }
+    
+    // Preset Windows heights: Cycle between 1/3, 1/2, 2/3 of the output, and a fixed 720 logical pixels.
+    preset-window-heights {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+        fixed 720
+    }
+    // Reserved Space for Status bar
+    struts {
+        left 0
+        right 0
+        top 30
+        bottom 0
+    }
+    
+    // Focus ring (active window highlight) - OneDark cyan
+    focus-ring {
+        width 2
+        active-color "#61afef"        // Bright blue (OneDark Pro blue)
+        inactive-color "#3e4451"      // Dark gray (OneDark Pro comment)
+        
+        // Optional gradient effect
+        active-gradient from="#61afef" to="#56b6c2" angle=45
+    }
+    
+    // Border configuration
+    border {
+        width 2
+        active-color "#61afef"        // Bright blue for active
+        inactive-color "#2c323c"      // Darker gray for inactive
+        
+        // Optional gradient
+        active-gradient from="#61afef" to="#c678dd" angle=45
+    }
+}
+
+// ============================================================================
+// OVERVIEW MODE COLORS
+// ============================================================================
+overview {
+    zoom 0.5
+    backdrop-color "#000000"          // Pure black backdrop
+    
+    workspace-shadow {
+        blur-sigma 8.0
+        color "#000000"               // Pure black shadow
+    }
+}
+
+// ============================================================================
+// ANIMATION COLORS
+// ============================================================================
+// These affect config notifications and screenshot UI
+
+animations {
+   // Smooth window movements
+    slowdown 1.0
+    
+    window-open {
+        duration-ms 200
+        curve "ease-out-cubic"
+    }
+    
+    window-close {
+        duration-ms 150
+        curve "ease-in-cubic"
+    }
+    
+    window-movement {
+        duration-ms 200
+        curve "ease-out-cubic"
+    }
+    
+    window-resize {
+        spring damping-ratio=1.0 stiffness=800 epsilon=0.0001
+    }
+    
+    workspace-switch {
+        duration-ms 250
+        curve "ease-out-cubic"
+    }
+    
+    horizontal-view-movement {
+        duration-ms 250
+        curve "ease-out-cubic"
+    }
+    
+    overview-open-close {
+        spring damping-ratio=1.0 stiffness=800 epsilon=0.0001
+    }
+
+    config-notification-open-close {
+        spring damping-ratio=0.6 stiffness=1000 epsilon=0.001
+    }
+    
+    screenshot-ui-open {
+        spring damping-ratio=0.6 stiffness=1000 epsilon=0.001
+    }
+}
+
 // ============================================================================
 // INPUT CONFIGURATION
 // ============================================================================
@@ -42,96 +195,79 @@ output "eDP-1" {
     // mode "1920x1080@60.000"
     scale 1.0
     transform "normal"
-    background-color "#000000"
     position x=0 y=0
-}
-
-// ============================================================================
-// LAYOUT CONFIGURATION
-// ============================================================================
-layout {
-    // Gaps between windows (modern look)
-    gaps 10
-    
-    // Center focused column
-    center-focused-column "never"
-    
-    // Preset column widths
-    preset-column-widths {
-        proportion 0.33333
-        proportion 0.5
-        proportion 0.66667
-    }
-    
-    // Default column width
-    default-column-width { proportion 0.5; }
-    
-    // Focus ring (active window highlight)
-    focus-ring {
-        width 5
-        active-color "#FFD700"    // Yellow for active window
-        inactive-color "#4A4A4A"  // Dull gray for inactive
-        
-        // Glowing effect with gradient(optional)
-        active-gradient from="#FFD700" to="#FFED4E" angle=45 in="oklch"
-    }
-    
-    // Border configuration
-    border {
-        width 3
-        active-color "#FFD700"    // Yellow border for active
-        inactive-color "#4A4A4A"  // Gray border for inactive
-        
-        //  Glowing effect with gradient(optional)
-        active-gradient from="#FFD700" to="#FFA500" angle=135 in="oklch"
-    }
-    
-    // Struts - reserve space for panels/bars
-    struts {
-        left 0
-        right 0
-        top 30				// Space always reserved
-        bottom 0
-    }
 }
 
 // ============================================================================
 // WINDOW RULES
 // ============================================================================
 window-rule {
-    // All windows get rounded corners
+    // Default rounded corners for all windows
     geometry-corner-radius 12
     clip-to-geometry true
+    
+    // Optional: Default border colors
+    border {
+        width 2
+        active-color "#61afef"
+        inactive-color "#2c323c"
+    }
 }
 
 // Window rules Status Bar
 window-rule {
     match app-id="niri-statusbar"
-    strut top 30
-	// strut bottom 30				// For bottom
     focus-on-activate false			// Make it always visible
     
-        // Add border
     border {
         width 2
-        active-color "#00ff00"    // Bright green for active
-        inactive-color "#ffffff"  // White for inactive
+        active-color "#98c379"        // Green accent
+        inactive-color "#282c34"
     }
 }
 
+// Terminal windows - Cyan accent
+window-rule {
+    match app-id="foot"
+    border {
+        width 2
+        active-color "#56b6c2"        // Cyan
+        inactive-color="#2c323c"
+    }
+}
 
-// Example: Floating windows
+// File manager - Yellow accent
+window-rule {
+    match title="^lf.*"
+    border {
+        width 2
+        active-color "#e5c07b"        // Yellow
+        inactive-color "#2c323c"
+    }
+}
+
+// Floating windows (calculator, etc.) - Purple accent
 window-rule {
     match app-id="^org.gnome.Calculator$"
     default-column-width { fixed 400; }
     open-floating true
+    border {
+        width 2
+        active-color "#c678dd"        // Purple/Magenta
+        inactive-color "#2c323c"
+    }
 }
 
-// File manager (lf in foot terminal)
+// Alert/Error windows - Red accent
 window-rule {
-    match title="^lf.*"
-    default-column-width { proportion 0.5; }
+    match is-focused=false
+    opacity 0.95
+    border {
+        width 2
+        inactive-color "#e06c75"      // Red for attention
+    }
 }
+
 
 // ============================================================================
 // APPEARANCE & THEME
@@ -144,42 +280,6 @@ cursor {
     xcursor-size 24
 }
 
-// ============================================================================
-// ANIMATIONS
-// ============================================================================
-animations {
-    // Smooth window movements
-    slowdown 1.0
-    
-    window-open {
-        duration-ms 200
-        curve "ease-out-cubic"
-    }
-    
-    window-close {
-        duration-ms 150
-        curve "ease-in-cubic"
-    }
-    
-    window-movement {
-        duration-ms 200
-        curve "ease-out-cubic"
-    }
-    
-    workspace-switch {
-        duration-ms 250
-        curve "ease-out-cubic"
-    }
-    
-    horizontal-view-movement {
-        duration-ms 250
-        curve "ease-out-cubic"
-    }
-    
-    config-notification-open-close {
-        duration-ms 200
-    }
-}
 
 // ============================================================================
 // KEYBINDINGS (Windows-like shortcuts)
@@ -199,7 +299,7 @@ binds {
     Mod+Shift+Q { quit; }
     
     // Win+Shift+R: Reload config
-    Mod+Shift+R { reload-config; }
+    // Mod+Shift+R { reload-config; }
     
     // ========================================================================
     // APPLICATION LAUNCHERS (Windows-like)
@@ -212,10 +312,13 @@ binds {
     Mod+E { spawn "foot" "-e" "lf"; }
     
     // Win+R: Application Launcher (like Windows Run)
-    Mod+R { spawn "fuzzel"; }
+    Mod+D { spawn "fuzzel"; }
     
-    // Or traditional Alt+F2
-    Alt+F2 { spawn "fuzzel"; }
+    // Web Broswer
+    //MOD+B { spawn "firefox"; }
+    
+    // Show a list of important hotkeys
+    Mod+Shift+Slash { show-hotkey-overlay; }
     
     // ========================================================================
     // SCREENSHOTS (Windows-like)
@@ -234,15 +337,15 @@ binds {
     Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
     
     // Alt+Print: Screenshot active window
-    Alt+Print { spawn "sh" "-c" "grim -g \"$(slurp -w 0)\" ~/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png"; }
+    Alt+Print { screenshot-window; }
     
     // ========================================================================
     // WINDOW MANAGEMENT (Windows-like)
     // ========================================================================
     
-    // Win+Left/Right: Snap windows (Windows Snap)
-    Mod+Left { consume-or-ignore-window-open-request; focus-column-left; }
-    Mod+Right { consume-or-ignore-window-open-request; focus-column-right; }
+    // Win+Left/Right: Windows Focus
+    Mod+Left { focus-column-left; }
+    Mod+Right { focus-column-right; }
     Mod+Up { focus-window-up; }
     Mod+Down { focus-window-down; }
     
@@ -265,22 +368,6 @@ binds {
     // Win+Tab: Workspace overview
     Mod+Tab { focus-workspace-down; }
     Mod+Shift+Tab { focus-workspace-up; }
-    
-    // ========================================================================
-    // FLOATING WINDOW MANAGEMENT
-    // ========================================================================
-    
-    // Toggle floating mode
-    Mod+Shift+Space { toggle-window-floating; }
-    
-    // Center floating window
-    Mod+Ctrl+C { center-column; }
-    
-    // Move floating window (keyboard)
-    Mod+Ctrl+Left { move-window-left; }
-    Mod+Ctrl+Right { move-window-right; }
-    Mod+Ctrl+Up { move-window-up; }
-    Mod+Ctrl+Down { move-window-down; }
 
     // ========================================================================
     // WINDOW SIZING
@@ -304,6 +391,16 @@ binds {
     Mod+2 { set-column-width "50%"; }
     Mod+3 { set-column-width "67%"; }
     
+    // Switching between window (column) widths
+    Mod+R { switch-preset-column-width; }
+    
+    // Switching between window height
+    Mod+Shift+H { switch-preset-column-width; }
+    
+    // Snap back to Window height
+    Mod+Ctrl+R { reset-window-height; }
+    
+    
     // ========================================================================
     // WORKSPACE MANAGEMENT (Windows-like Virtual Desktops)
     // ========================================================================
@@ -312,34 +409,31 @@ binds {
     Mod+Ctrl+Left { focus-workspace-down; }
     Mod+Ctrl+Right { focus-workspace-up; }
     
-    // Win+Ctrl+D: Create new workspace
-    Mod+Ctrl+D { focus-workspace-down; }
-    
     // Move window to workspace
     Mod+Ctrl+Shift+Left { move-window-to-workspace-down; }
     Mod+Ctrl+Shift+Right { move-window-to-workspace-up; }
     
     // Direct workspace switching (Win+1-9)
-    Mod+KP_1 { focus-workspace 1; }
-    Mod+KP_2 { focus-workspace 2; }
-    Mod+KP_3 { focus-workspace 3; }
-    Mod+KP_4 { focus-workspace 4; }
-    Mod+KP_5 { focus-workspace 5; }
-    Mod+KP_6 { focus-workspace 6; }
-    Mod+KP_7 { focus-workspace 7; }
-    Mod+KP_8 { focus-workspace 8; }
-    Mod+KP_9 { focus-workspace 9; }
+    Mod+1 { focus-workspace 1; }
+    Mod+2 { focus-workspace 2; }
+    Mod+3 { focus-workspace 3; }
+    Mod+4 { focus-workspace 4; }
+    Mod+5 { focus-workspace 5; }
+    Mod+6 { focus-workspace 6; }
+    Mod+7 { focus-workspace 7; }
+    Mod+8 { focus-workspace 8; }
+    Mod+9 { focus-workspace 9; }
     
     // Move to specific workspace
-    Mod+Shift+KP_1 { move-window-to-workspace 1; }
-    Mod+Shift+KP_2 { move-window-to-workspace 2; }
-    Mod+Shift+KP_3 { move-window-to-workspace 3; }
-    Mod+Shift+KP_4 { move-window-to-workspace 4; }
-    Mod+Shift+KP_5 { move-window-to-workspace 5; }
-    Mod+Shift+KP_6 { move-window-to-workspace 6; }
-    Mod+Shift+KP_7 { move-window-to-workspace 7; }
-    Mod+Shift+KP_8 { move-window-to-workspace 8; }
-    Mod+Shift+KP_9 { move-window-to-workspace 9; }
+    Mod+Shift+Kv1 { move-window-to-workspace 1; }
+    Mod+Shift+Kv2 { move-window-to-workspace 2; }
+    Mod+Shift+Kv3 { move-window-to-workspace 3; }
+    Mod+Shift+Kv4 { move-window-to-workspace 4; }
+    Mod+Shift+Kv5 { move-window-to-workspace 5; }
+    Mod+Shift+Kv6 { move-window-to-workspace 6; }
+    Mod+Shift+Kv7 { move-window-to-workspace 7; }
+    Mod+Shift+Kv8 { move-window-to-workspace 8; }
+    Mod+Shift+Kv9 { move-window-to-workspace 9; }
     
     // ========================================================================
     // MEDIA KEYS (Volume & Brightness)
@@ -426,7 +520,6 @@ environment {
     QT_QPA_PLATFORMTHEME "qt5ct"
     
     // Enable Wayland for various toolkits
-    DISPLAY ":0"
     WAYLAND_DISPLAY "wayland-1"
     XDG_SESSION_TYPE "wayland"
     XDG_CURRENT_DESKTOP "niri"
