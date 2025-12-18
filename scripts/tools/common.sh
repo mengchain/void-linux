@@ -208,6 +208,8 @@ else
     readonly COLOR_SUCCESS=''
     readonly COLOR_WARNING=''
 fi
+# Ensure COLOR_RESET alias exists (used by progress_bar and spinner)
+readonly COLOR_RESET="${NC}"
 
 # ============================================
 # SYMBOLS FOR VISUAL OUTPUT
