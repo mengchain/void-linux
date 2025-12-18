@@ -71,7 +71,7 @@ load_config() {
     # Define search locations in order
     local search_locations=(
         "./${config_name}"                      # Current directory (highest priority)
-        "~/.config/${config_name}"              # User config directory
+        "${HOME}/.config/${config_name}"              # User config directory
         "/etc/${config_name}"                   # System config directory
         "/${config_name}"                       # Root directory (lowest priority)
     )
