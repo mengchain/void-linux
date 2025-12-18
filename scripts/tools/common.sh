@@ -132,12 +132,13 @@ load_config() {
 
 # Set default values for variables
 set_defaults() {
-    local -A defaults=("$@")
-    
-    for var in "${!defaults[@]}"; do
-        if [[ -z "${!var:-}" ]]; then
-            declare -g "$var"="${defaults[$var]}"
-            debug "Set default: $var=${defaults[$var]}"
+    for kv in "$@"; do
+        # Expect argument in form NAME=VALUE
+        local name="${kv%%=*}"
+        local value="${kv#*=}"
+        if [[ -z "${!name:-}" ]]; then
+            declare -g "$name"="$value"
+            debug "Set default: $name=$value"
         fi
     done
 }
